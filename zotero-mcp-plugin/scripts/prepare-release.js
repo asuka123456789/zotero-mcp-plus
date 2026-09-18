@@ -1,57 +1,34 @@
-/* eslint-env node */
-import fs from "fs";
-import path from "path";
-import { fileURLToPath } from "url";
+import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
-const rootDir = path.resolve(__dirname, "..");
-const packageJsonPath = path.join(rootDir, "package.json");
-const updateJsonPath = path.join(rootDir, "update.json");
-const updateBetaJsonPath = path.join(rootDir, "update-beta.json");
-
-const packageJson = JSON.parse(fs.readFileSync(packageJsonPath, "utf-8"));
-const {
-  version,
-  config: { addonID },
-} = packageJson;
-
-const repoUrl = "https://github.com/cookjohn/zotero-mcp";
-
-function generateUpdateJson(isBeta = false) {
-  const currentVersion = isBeta ? `${version}-beta.0` : version;
-  const updateLink = `${repoUrl}/releases/download/v${currentVersion}/zotero-mcp-plugin-${currentVersion}.xpi`;
-
-  return {
-    addons: {
-      [addonID]: {
-        updates: [
-          {
-            version: currentVersion,
-            update_link: updateLink,
-            applications: {
-              zotero: {
-                strict_min_version: "6.999",
-                strict_max_version: "9.*",
-              },
-            },
-          },
-        ],
-      },
-    },
-  };
+const root = new URL("../", import.meta.url);
+const pkg = JSON.parse(readFileSync(new URL("package.json", root), "utf8"));
+const manifest = JSON.parse(
+  readFileSync(new URL(".scaffold/build/addon/manifest.json", root), "utf8"),
+);
+const application = manifest.applications?.zotero;
+if (
+  manifest.version !== pkg.version ||
+  application?.id !== pkg.config.addonID ||
+  application?.update_url !==
+    "https://example.invalid/zotero-mcp-plus/updates.json"
+) {
+  throw new Error("产物身份、版本或更新地址与 Plus 发布约束不符，请重新构建");
 }
 
-fs.writeFileSync(
-  updateJsonPath,
-  JSON.stringify(generateUpdateJson(false), null, 2),
-);
-fs.writeFileSync(
-  updateBetaJsonPath,
-  JSON.stringify(generateUpdateJson(true), null, 2),
-);
-
+const xpi = new URL(`.scaffold/build/${pkg.config.addonRef}.xpi`, root);
+const bytes = readFileSync(xpi);
 console.log(
-  `Generated update.json and update-beta.json for version ${version}`,
+  JSON.stringify(
+    {
+      version: pkg.version,
+      file: fileURLToPath(xpi),
+      bytes: bytes.length,
+      sha256: createHash("sha256").update(bytes).digest("hex"),
+    },
+    null,
+    2,
+  ),
 );
+console.log("仅检查本地产物；未运行测试、提交、推送或创建 Release。");

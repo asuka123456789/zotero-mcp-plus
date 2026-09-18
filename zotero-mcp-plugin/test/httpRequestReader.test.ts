@@ -185,7 +185,9 @@ describe("readHttpRequest", function () {
         sleep: noSleep,
       });
       // "café" is 5 chars but 6 bytes; Content-Length is byte-denominated.
-      expect(result.contentLength).to.equal(new TextEncoder().encode(body).length);
+      expect(result.contentLength).to.equal(
+        new TextEncoder().encode(body).length,
+      );
       expect(result.contentLength).to.be.greaterThan(body.length);
       expect(result.complete).to.equal(true);
     });

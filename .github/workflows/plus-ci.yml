@@ -1,0 +1,30 @@
+name: Plus CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  node-checks:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: zotero-mcp-plugin
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: zotero-mcp-plugin/package-lock.json
+      - run: npm ci --ignore-scripts
+      - run: npm run lint:check
+      - run: npm run test:unit
+      - run: npm run build
+      - run: npm audit --audit-level=moderate
+      # Zotero 原生 GUI、真实 PDF 识别与并行插件验证须在显式隔离 profile 中另行运行。
+      # 此工作流不签名、不创建 release、不推送产物，也不访问真实文库。

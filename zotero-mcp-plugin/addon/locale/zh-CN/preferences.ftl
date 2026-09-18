@@ -7,12 +7,17 @@ pref-server-enable =
 pref-server-enable-text = 启用服务器
 pref-server-port = 端口号
 pref-server-port-invalid = 端口号必须在 1024 和 65535 之间。
-pref-server-port-restart-hint = 修改后需重启服务器
-pref-server-allow-remote =
-    .label = 允许远程访问（监听 0.0.0.0）
-pref-server-remote-text = 允许远程访问
-pref-server-remote-sub = 开启后请确保网络环境安全
-pref-server-allow-remote-warning = 警告：这将使 MCP 服务器暴露到网络中。仅在需要远程访问或遇到 VPN/代理问题时启用。
+pref-server-port-restart-hint = 修改后需点击“应用并重启”使新端口生效
+pref-server-port-apply = 应用并重启
+pref-server-token-title = 访问令牌 (Bearer Token)
+pref-server-token-show = 显示
+pref-server-token-copy = 复制 Token
+pref-server-token-rotate = 轮换 Token
+pref-server-token-desc = 所有 AI 客户端连接 MCP 均需携带此 Bearer 令牌进行安全认证
+pref-write-enable =
+    .label = 允许写入操作
+pref-write-enable-text = 允许写入操作
+pref-write-enable-sub = 默认关闭；开启后 AI 客户端可创建文献条目与笔记
 pref-server-off-hint = MCP 服务器已关闭，开启后即可配置客户端和搜索功能
 
 pref-mcp-settings-title = 内容设置
@@ -216,15 +221,10 @@ pref-detail-stats-title = 详细统计与 API 用量
 pref-detail-index-section = 索引详情
 pref-detail-api-section = API 累计
 
-first-install-title = 欢迎使用 Zotero MCP 插件
-first-install-prompt = 感谢安装 Zotero MCP 插件！为了开始使用，您需要为您的 AI 客户端生成配置文件。是否现在打开设置页面来生成配置？
+first-install-title = 欢迎使用 Zotero MCP Plus 插件
+first-install-prompt = 感谢安装 Zotero MCP Plus 插件！为了开始使用，您需要为您的 AI 客户端生成配置文件。是否现在打开设置页面来生成配置？
 first-install-open-prefs = 打开设置
 first-install-later = 稍后配置
 
-pref-write-enable-text = 启用写入操作
-pref-write-enable-sub = 允许 AI 客户端创建和修改笔记（默认关闭以确保安全）
-
 pref-contact-title = 联系方式
-pref-contact-email = 邮箱：fransjone@mail.com
-pref-contact-github = GitHub：https://github.com/cookjohn/zotero-mcp
-pref-contact-wechat = 微信公众号：未来论文实验室
+pref-contact-github = GitHub：https://github.com/asuka123456789/zotero-mcp-plus

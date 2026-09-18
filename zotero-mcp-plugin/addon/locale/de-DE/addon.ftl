@@ -4,50 +4,13 @@ menuitem-label = Zotero MCP Plugin: Hilfsbeispiele
 menupopup-label = Zotero MCP Plugin: Menüpopup
 menuitem-submenulabel = Zotero MCP Plugin
 menuitem-filemenulabel = Zotero MCP Plugin: Datei-Menüeintrag
-prefs-title = Zotero MCP Plugin
+prefs-title = Zotero MCP Plus
 prefs-table-title = Titel
 prefs-table-detail = Details
 tabpanel-lib-tab-label = Bibliothek-Tab
 tabpanel-reader-tab-label = Reader-Tab
 
 # Client Configuration Instructions
-codex-cli-instructions =
-    ══════════════════════════════════════════════════════════
-      Codex CLI MCP Configuration Guide
-    ══════════════════════════════════════════════════════════
-
-    ▶ Method 1: CLI Command (Recommended)
-    ──────────────────────────────────────────────────────────
-       codex mcp add zotero-mcp http://127.0.0.1:23120/mcp -t http
-
-    ▶ Method 2: TOML Configuration File
-    ──────────────────────────────────────────────────────────
-       1. Open ~/.codex/config.toml
-       2. Add the generated TOML snippet under [mcp_servers]
-       3. Keep the headers block:
-          [mcp_servers."zotero-mcp".headers]
-          "Content-Type" = "application/json"
-       4. Save and restart Codex CLI session
-
-    ▶ Method 3: Unified config with Claude Code / cc-switch
-    ──────────────────────────────────────────────────────────
-       1. Keep the same HTTP endpoint and Content-Type header
-       2. Claude Code style JSON with headers is also compatible
-       3. Use one shared zotero-mcp server definition across clients
-
-    ▶ Verification
-    ──────────────────────────────────────────────────────────
-       1. Use 'codex mcp list' to confirm the server is registered
-       2. Run a prompt that calls tools/list or a Zotero tool
-
-    ▶ Prerequisites
-    ──────────────────────────────────────────────────────────
-       ✓ Zotero must be running
-       ✓ MCP plugin server must be enabled
-       ✓ Endpoint should be reachable at 127.0.0.1
-
-    ══════════════════════════════════════════════════════════
-
 claude-desktop-instructions =
     ══════════════════════════════════════════════════════════
       Claude Desktop MCP Configuration Guide

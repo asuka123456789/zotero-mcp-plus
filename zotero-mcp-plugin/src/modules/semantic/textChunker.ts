@@ -14,11 +14,11 @@ declare let ztoolkit: ZToolkit;
 // ============== Interfaces ==============
 
 export interface ChunkerOptions {
-  maxChunkSize: number;      // Maximum chunk size (characters)
-  minChunkSize: number;      // Minimum chunk size
-  overlapSentences: number;  // Number of sentences to overlap
-  skipReferences: boolean;   // Skip reference section
-  qualityThreshold: number;  // Minimum quality score (0-100)
+  maxChunkSize: number; // Maximum chunk size (characters)
+  minChunkSize: number; // Minimum chunk size
+  overlapSentences: number; // Number of sentences to overlap
+  skipReferences: boolean; // Skip reference section
+  qualityThreshold: number; // Minimum quality score (0-100)
 }
 
 export interface TextChunk {
@@ -30,9 +30,9 @@ export interface TextChunk {
 
 export interface SemanticChunk {
   text: string;
-  type: 'abstract' | 'keywords' | 'section' | 'paragraph' | 'references';
+  type: "abstract" | "keywords" | "section" | "paragraph" | "references";
   title?: string;
-  importance: 'high' | 'normal' | 'low';
+  importance: "high" | "normal" | "low";
   quality: number;
 }
 
@@ -62,8 +62,8 @@ export class TextQualityPreprocessor {
   static process(text: string): { text: string; quality: QualityResult } {
     if (!text || text.trim().length === 0) {
       return {
-        text: '',
-        quality: { score: 0, issues: ['empty'], shouldIndex: false }
+        text: "",
+        quality: { score: 0, issues: ["empty"], shouldIndex: false },
       };
     }
 
@@ -71,15 +71,16 @@ export class TextQualityPreprocessor {
 
     // 1. Normalize whitespace
     processed = processed
-      .replace(/\r\n/g, '\n')
-      .replace(/\r/g, '\n')
-      .replace(/\t/g, ' ')
-      .replace(/\u00A0/g, ' ')
-      .replace(/[\u2000-\u200B]/g, ' ')
-      .replace(/ {3,}/g, '  ');
+      .replace(/\r\n/g, "\n")
+      .replace(/\r/g, "\n")
+      .replace(/\t/g, " ")
+      .replace(/\u00A0/g, " ")
+      .replace(/[\u2000-\u200B]/g, " ")
+      .replace(/ {3,}/g, "  ");
 
     // 2. Remove control characters (keep newlines)
-    processed = processed.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, '');
+    // eslint-disable-next-line no-control-regex -- 清洗非打印 ASCII 控制字符（保留换行与空白）
+    processed = processed.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/g, "");
 
     // 3. Remove garbage lines (OCR failures)
     processed = this.removeGarbageLines(processed);
@@ -88,7 +89,7 @@ export class TextQualityPreprocessor {
     processed = this.removeRepeatedLines(processed);
 
     // 5. Clean up excessive newlines
-    processed = processed.replace(/\n{4,}/g, '\n\n\n').trim();
+    processed = processed.replace(/\n{4,}/g, "\n\n\n").trim();
 
     // 6. Assess quality
     const quality = this.assessQuality(processed);
@@ -100,33 +101,37 @@ export class TextQualityPreprocessor {
    * Remove lines that are mostly punctuation/symbols (OCR failure signature)
    */
   private static removeGarbageLines(text: string): string {
-    return text.split('\n').filter(line => {
-      const trimmed = line.trim();
-      if (trimmed.length === 0) return true; // Keep empty lines for structure
+    return text
+      .split("\n")
+      .filter((line) => {
+        const trimmed = line.trim();
+        if (trimmed.length === 0) return true; // Keep empty lines for structure
 
-      // Valid characters: Chinese + English letters + digits
-      const validChars = (trimmed.match(/[a-zA-Z\u4e00-\u9fa5\d]/g) || []).length;
-      const validRatio = validChars / trimmed.length;
+        // Valid characters: Chinese + English letters + digits
+        const validChars = (trimmed.match(/[a-zA-Z\u4e00-\u9fa5\d]/g) || [])
+          .length;
+        const validRatio = validChars / trimmed.length;
 
-      // If valid characters < 30% and line is not too short, it's garbage
-      if (validRatio < 0.3 && trimmed.length > 5) {
-        return false;
-      }
+        // If valid characters < 30% and line is not too short, it's garbage
+        if (validRatio < 0.3 && trimmed.length > 5) {
+          return false;
+        }
 
-      // Remove single character lines (likely OCR artifacts) except numbers
-      if (trimmed.length <= 2 && !/^[\d]+[.、)]?$/.test(trimmed)) {
-        return false;
-      }
+        // Remove single character lines (likely OCR artifacts) except numbers
+        if (trimmed.length <= 2 && !/^[\d]+[.、)]?$/.test(trimmed)) {
+          return false;
+        }
 
-      return true;
-    }).join('\n');
+        return true;
+      })
+      .join("\n");
   }
 
   /**
    * Remove lines that appear too frequently (headers/footers)
    */
   private static removeRepeatedLines(text: string): string {
-    const lines = text.split('\n');
+    const lines = text.split("\n");
     if (lines.length <= 10) return text;
 
     // Count line frequency
@@ -139,14 +144,14 @@ export class TextQualityPreprocessor {
     }
 
     // Remove lines appearing more than 3 times
-    const filtered = lines.filter(line => {
+    const filtered = lines.filter((line) => {
       const trimmed = line.trim();
       return !freq[trimmed] || freq[trimmed] <= 3;
     });
 
     // Only apply if we didn't remove too much
     if (filtered.length >= lines.length * 0.9) {
-      return filtered.join('\n');
+      return filtered.join("\n");
     }
     return text;
   }
@@ -159,10 +164,10 @@ export class TextQualityPreprocessor {
     let score = 100;
 
     if (!text || text.length < 50) {
-      return { score: 0, issues: ['too_short'], shouldIndex: false };
+      return { score: 0, issues: ["too_short"], shouldIndex: false };
     }
 
-    const noSpace = text.replace(/\s/g, '');
+    const noSpace = text.replace(/\s/g, "");
 
     // 1. Valid character ratio (Chinese + English)
     const validChars = (text.match(/[a-zA-Z\u4e00-\u9fa5]/g) || []).length;
@@ -173,7 +178,8 @@ export class TextQualityPreprocessor {
     }
 
     // 2. Punctuation ratio
-    const punct = (text.match(/[，。、；：""''！？…—,.;:!?"'\-\(\)\[\]]/g) || []).length;
+    const punct = (text.match(/[，。、；：""''！？…—,.;:!?"'\-()[\]]/g) || [])
+      .length;
     const punctRatio = punct / text.length;
     if (punctRatio > 0.25) {
       score -= 30;
@@ -183,11 +189,11 @@ export class TextQualityPreprocessor {
     // 3. Consecutive punctuation (strong OCR failure indicator)
     if (/[，。、；：,.;:]{4,}/.test(text)) {
       score -= 30;
-      issues.push('consecutive_punct');
+      issues.push("consecutive_punct");
     }
 
     // 4. Average line length
-    const lines = text.split('\n').filter(l => l.trim().length > 0);
+    const lines = text.split("\n").filter((l) => l.trim().length > 0);
     if (lines.length > 5) {
       const avgLineLen = lines.reduce((s, l) => s + l.length, 0) / lines.length;
       if (avgLineLen < 15) {
@@ -199,7 +205,7 @@ export class TextQualityPreprocessor {
     return {
       score: Math.max(0, score),
       issues,
-      shouldIndex: score >= 30 && text.length >= 50
+      shouldIndex: score >= 30 && text.length >= 50,
     };
   }
 }
@@ -215,7 +221,7 @@ export class TextChunker {
       minChunkSize: options.minChunkSize || 50,
       overlapSentences: options.overlapSentences || 1,
       skipReferences: options.skipReferences ?? true,
-      qualityThreshold: options.qualityThreshold || 30
+      qualityThreshold: options.qualityThreshold || 30,
     };
   }
 
@@ -235,17 +241,23 @@ export class TextChunker {
     const { text: cleanText, quality } = TextQualityPreprocessor.process(text);
 
     if (!quality.shouldIndex) {
-      ztoolkit.log(`[TextChunker] Quality too low (${quality.score}), skipping: ${quality.issues.join(', ')}`);
+      ztoolkit.log(
+        `[TextChunker] Quality too low (${quality.score}), skipping: ${quality.issues.join(", ")}`,
+      );
       return [];
     }
 
     if (quality.score < 60) {
-      ztoolkit.log(`[TextChunker] Low quality warning: ${quality.score}, issues: ${quality.issues.join(', ')}`);
+      ztoolkit.log(
+        `[TextChunker] Low quality warning: ${quality.score}, issues: ${quality.issues.join(", ")}`,
+      );
     }
 
     // 2. Detect document structure
     const structure = this.detectStructure(cleanText);
-    ztoolkit.log(`[TextChunker] Structure: abstract=${structure.hasAbstract}, sections=${structure.sections.length}, refs=${structure.referencesStart !== null}`);
+    ztoolkit.log(
+      `[TextChunker] Structure: abstract=${structure.hasAbstract}, sections=${structure.sections.length}, refs=${structure.referencesStart !== null}`,
+    );
 
     // 3. Split into semantic units
     const units = this.splitByStructure(cleanText, structure);
@@ -256,14 +268,17 @@ export class TextChunker {
 
     // 5. Extract text only
     const result = chunks
-      .filter(c => c.quality >= this.options.qualityThreshold)
-      .map(c => c.text);
+      .filter((c) => c.quality >= this.options.qualityThreshold)
+      .map((c) => c.text);
 
     const elapsed = Date.now() - startTime;
-    const avgSize = result.length > 0
-      ? Math.round(result.reduce((a, c) => a + c.length, 0) / result.length)
-      : 0;
-    ztoolkit.log(`[TextChunker] Done: ${result.length} chunks, avg size=${avgSize}, time=${elapsed}ms`);
+    const avgSize =
+      result.length > 0
+        ? Math.round(result.reduce((a, c) => a + c.length, 0) / result.length)
+        : 0;
+    ztoolkit.log(
+      `[TextChunker] Done: ${result.length} chunks, avg size=${avgSize}, time=${elapsed}ms`,
+    );
 
     return result;
   }
@@ -294,14 +309,20 @@ export class TextChunker {
 
     for (let i = 0; i < chunks.length; i++) {
       const chunkText = chunks[i];
-      const startPos = text.indexOf(chunkText.substring(0, Math.min(50, chunkText.length)), searchStart);
-      const endPos = startPos >= 0 ? startPos + chunkText.length : searchStart + chunkText.length;
+      const startPos = text.indexOf(
+        chunkText.substring(0, Math.min(50, chunkText.length)),
+        searchStart,
+      );
+      const endPos =
+        startPos >= 0
+          ? startPos + chunkText.length
+          : searchStart + chunkText.length;
 
       result.push({
         id: i,
         text: chunkText,
         startPos: startPos >= 0 ? startPos : searchStart,
-        endPos
+        endPos,
       });
 
       searchStart = startPos >= 0 ? startPos + 1 : searchStart + 1;
@@ -318,13 +339,13 @@ export class TextChunker {
       hasAbstract: false,
       hasKeywords: false,
       sections: [],
-      referencesStart: null
+      referencesStart: null,
     };
 
     // Detect abstract (Chinese and English)
     const abstractPatterns = [
-      /^(摘\s*要|Abstract|ABSTRACT)[：:\s]*\n?([\s\S]*?)(?=\n\s*\n|关键词|Keywords|Key\s*words|1\s*[\.、]|一[、．.]|Introduction|引言)/im,
-      /(摘\s*要|Abstract)[：:\s]*([\s\S]{50,800}?)(?=\n\s*\n)/im
+      /^(摘\s*要|Abstract|ABSTRACT)[：:\s]*\n?([\s\S]*?)(?=\n\s*\n|关键词|Keywords|Key\s*words|1\s*[.、]|一[、．.]|Introduction|引言)/im,
+      /(摘\s*要|Abstract)[：:\s]*([\s\S]{50,800}?)(?=\n\s*\n)/im,
     ];
 
     for (const pattern of abstractPatterns) {
@@ -339,7 +360,7 @@ export class TextChunker {
 
     // Detect keywords
     const keywordsMatch = text.match(
-      /^(关键词|Keywords|Key\s*words)[：:\s]*([\s\S]*?)(?=\n\s*\n|\n[一二三四五1-9])/im
+      /^(关键词|Keywords|Key\s*words)[：:\s]*([\s\S]*?)(?=\n\s*\n|\n[一二三四五1-9])/im,
     );
     if (keywordsMatch) {
       structure.hasKeywords = true;
@@ -348,22 +369,25 @@ export class TextChunker {
     }
 
     // Detect section headers (Chinese numbered, Arabic numbered, Markdown)
-    const sectionPatterns: Array<{ pattern: RegExp; levelFn: (m: string) => number }> = [
+    const sectionPatterns: Array<{
+      pattern: RegExp;
+      levelFn: (m: string) => number;
+    }> = [
       {
         pattern: /^([一二三四五六七八九十]+)[、.．]\s*(.{2,50})$/gm,
-        levelFn: () => 1
+        levelFn: () => 1,
       },
       {
-        pattern: /^(\d+)[\.．]\s*(.{2,50})$/gm,
-        levelFn: (m) => m.length === 1 ? 1 : 2
+        pattern: /^(\d+)[.．]\s*(.{2,50})$/gm,
+        levelFn: (m) => (m.length === 1 ? 1 : 2),
       },
       {
-        pattern: /^(\d+\.\d+)[\.．]?\s*(.{2,50})$/gm,
-        levelFn: () => 2
+        pattern: /^(\d+\.\d+)[.．]?\s*(.{2,50})$/gm,
+        levelFn: () => 2,
       },
       {
         pattern: /^(#{1,3})\s*(.{2,50})$/gm,
-        levelFn: (m) => m.length
+        levelFn: (m) => m.length,
       },
     ];
 
@@ -373,7 +397,7 @@ export class TextChunker {
         structure.sections.push({
           level: levelFn(match[1]),
           title: (match[2] || match[0]).trim(),
-          position: match.index
+          position: match.index,
         });
       }
     }
@@ -384,7 +408,7 @@ export class TextChunker {
     // Detect references section
     const refPatterns = [
       /^(参考文献|References|Bibliography|REFERENCES)\s*$/im,
-      /\n(参考文献|References)\s*\n/i
+      /\n(参考文献|References)\s*\n/i,
     ];
     for (const pattern of refPatterns) {
       const match = text.match(pattern);
@@ -400,19 +424,24 @@ export class TextChunker {
   /**
    * Split text by document structure into semantic units
    */
-  private splitByStructure(text: string, structure: DocumentStructure): SemanticChunk[] {
+  private splitByStructure(
+    text: string,
+    structure: DocumentStructure,
+  ): SemanticChunk[] {
     const units: SemanticChunk[] = [];
     let processedEnd = 0;
 
     // 1. Abstract as high-importance unit
     if (structure.hasAbstract && structure.abstractEnd) {
-      const abstractText = text.substring(structure.abstractStart || 0, structure.abstractEnd).trim();
+      const abstractText = text
+        .substring(structure.abstractStart || 0, structure.abstractEnd)
+        .trim();
       if (abstractText.length >= this.options.minChunkSize) {
         units.push({
           text: abstractText,
-          type: 'abstract',
-          importance: 'high',
-          quality: 100
+          type: "abstract",
+          importance: "high",
+          quality: 100,
         });
         processedEnd = Math.max(processedEnd, structure.abstractEnd);
       }
@@ -420,13 +449,15 @@ export class TextChunker {
 
     // 2. Keywords (optional, often useful for search)
     if (structure.hasKeywords && structure.keywordsEnd) {
-      const keywordsText = text.substring(structure.keywordsStart!, structure.keywordsEnd).trim();
+      const keywordsText = text
+        .substring(structure.keywordsStart!, structure.keywordsEnd)
+        .trim();
       if (keywordsText.length >= 20) {
         units.push({
           text: keywordsText,
-          type: 'keywords',
-          importance: 'normal',
-          quality: 100
+          type: "keywords",
+          importance: "normal",
+          quality: 100,
         });
         processedEnd = Math.max(processedEnd, structure.keywordsEnd);
       }
@@ -439,7 +470,7 @@ export class TextChunker {
     if (structure.sections.length > 0) {
       // Has section structure
       const bodySections = structure.sections.filter(
-        s => s.position >= bodyStart && s.position < bodyEnd
+        (s) => s.position >= bodyStart && s.position < bodyEnd,
       );
 
       for (let i = 0; i < bodySections.length; i++) {
@@ -450,23 +481,25 @@ export class TextChunker {
         if (sectionText.length >= this.options.minChunkSize) {
           units.push({
             text: sectionText,
-            type: 'section',
+            type: "section",
             title: section.title,
-            importance: 'normal',
-            quality: 90
+            importance: "normal",
+            quality: 90,
           });
         }
       }
 
       // Content before first section
       if (bodySections.length > 0 && bodySections[0].position > bodyStart) {
-        const preText = text.substring(bodyStart, bodySections[0].position).trim();
+        const preText = text
+          .substring(bodyStart, bodySections[0].position)
+          .trim();
         if (preText.length >= this.options.minChunkSize) {
           units.push({
             text: preText,
-            type: 'paragraph',
-            importance: 'normal',
-            quality: 80
+            type: "paragraph",
+            importance: "normal",
+            quality: 80,
           });
         }
       }
@@ -480,9 +513,9 @@ export class TextChunker {
         if (trimmed.length >= this.options.minChunkSize) {
           units.push({
             text: trimmed,
-            type: 'paragraph',
-            importance: 'normal',
-            quality: 80
+            type: "paragraph",
+            importance: "normal",
+            quality: 80,
           });
         }
       }
@@ -494,9 +527,9 @@ export class TextChunker {
       if (refText.length >= this.options.minChunkSize) {
         units.push({
           text: refText,
-          type: 'references',
-          importance: 'low',
-          quality: 60
+          type: "references",
+          importance: "low",
+          quality: 60,
         });
       }
     }
@@ -532,15 +565,16 @@ export class TextChunker {
       }
 
       // Try to merge if same type and combined size is OK
-      const canMerge = buffer.type === chunk.type
-        && buffer.importance === chunk.importance
-        && buffer.text.length + chunk.text.length + 2 <= this.options.maxChunkSize;
+      const canMerge =
+        buffer.type === chunk.type &&
+        buffer.importance === chunk.importance &&
+        buffer.text.length + chunk.text.length + 2 <= this.options.maxChunkSize;
 
       if (canMerge) {
         buffer = {
           ...buffer,
-          text: buffer.text + '\n\n' + chunk.text,
-          quality: Math.min(buffer.quality, chunk.quality)
+          text: buffer.text + "\n\n" + chunk.text,
+          quality: Math.min(buffer.quality, chunk.quality),
         };
       } else {
         if (buffer.text.length >= this.options.minChunkSize) {
@@ -575,14 +609,17 @@ export class TextChunker {
     for (let i = 0; i < sentences.length; i++) {
       const sentence = sentences[i];
 
-      if (currentLength + sentence.length > this.options.maxChunkSize && currentSentences.length > 0) {
+      if (
+        currentLength + sentence.length > this.options.maxChunkSize &&
+        currentSentences.length > 0
+      ) {
         // Save current chunk
         chunks.push({
-          text: currentSentences.join(' '),
+          text: currentSentences.join(" "),
           type: unit.type,
           title: unit.title,
           importance: unit.importance,
-          quality: unit.quality
+          quality: unit.quality,
         });
 
         // Overlap: keep last N sentences
@@ -596,13 +633,16 @@ export class TextChunker {
     }
 
     // Last chunk
-    if (currentSentences.length > 0 && currentLength >= this.options.minChunkSize) {
+    if (
+      currentSentences.length > 0 &&
+      currentLength >= this.options.minChunkSize
+    ) {
       chunks.push({
-        text: currentSentences.join(' '),
+        text: currentSentences.join(" "),
         type: unit.type,
         title: unit.title,
         importance: unit.importance,
-        quality: unit.quality
+        quality: unit.quality,
       });
     }
 
@@ -616,15 +656,15 @@ export class TextChunker {
     // Split by sentence-ending punctuation
     const sentences = text
       .split(/(?<=[。！？.!?;；])\s*/)
-      .map(s => s.trim())
-      .filter(s => s.length > 0);
+      .map((s) => s.trim())
+      .filter((s) => s.length > 0);
 
     // If no sentences found (no punctuation), split by newlines
     if (sentences.length <= 1 && text.length > this.options.maxChunkSize) {
       return text
         .split(/\n+/)
-        .map(s => s.trim())
-        .filter(s => s.length > 0);
+        .map((s) => s.trim())
+        .filter((s) => s.length > 0);
     }
 
     return sentences;
@@ -645,8 +685,12 @@ export class TextChunker {
 
       // Try to find a good break point
       if (end < text.length) {
-        const breakChars = [' ', '，', ',', '。', '.', '、', ';', '；', '\n'];
-        for (let i = end - 1; i >= start + maxChunkSize - 100 && i >= start; i--) {
+        const breakChars = [" ", "，", ",", "。", ".", "、", ";", "；", "\n"];
+        for (
+          let i = end - 1;
+          i >= start + maxChunkSize - 100 && i >= start;
+          i--
+        ) {
           if (breakChars.includes(text[i])) {
             end = i + 1;
             break;
@@ -661,7 +705,7 @@ export class TextChunker {
           type: unit.type,
           title: unit.title,
           importance: unit.importance,
-          quality: unit.quality - 10 // Lower quality for force-split
+          quality: unit.quality - 10, // Lower quality for force-split
         });
       }
 
@@ -676,7 +720,10 @@ export class TextChunker {
    * Estimate token count
    */
   estimateTokens(text: string): number {
-    const cjkChars = (text.match(/[\u4e00-\u9fff\u3400-\u4dbf\u3040-\u309f\u30a0-\u30ff]/g) || []).length;
+    const cjkChars = (
+      text.match(/[\u4e00-\u9fff\u3400-\u4dbf\u3040-\u309f\u30a0-\u30ff]/g) ||
+      []
+    ).length;
     const otherChars = text.length - cjkChars;
     return Math.ceil(cjkChars * 1.5 + otherChars / 4);
   }
@@ -684,10 +731,11 @@ export class TextChunker {
   /**
    * Detect primary language
    */
-  detectLanguage(text: string): 'zh' | 'en' {
-    const chineseChars = (text.match(/[\u4e00-\u9fff\u3400-\u4dbf]/g) || []).length;
-    const totalChars = text.replace(/\s/g, '').length;
-    return totalChars > 0 && chineseChars / totalChars > 0.3 ? 'zh' : 'en';
+  detectLanguage(text: string): "zh" | "en" {
+    const chineseChars = (text.match(/[\u4e00-\u9fff\u3400-\u4dbf]/g) || [])
+      .length;
+    const totalChars = text.replace(/\s/g, "").length;
+    return totalChars > 0 && chineseChars / totalChars > 0.3 ? "zh" : "en";
   }
 }
 

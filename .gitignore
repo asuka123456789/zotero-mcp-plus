@@ -18,7 +18,8 @@ yarn-error.log*
 dist/
 build/
 *.tsbuildinfo
-.github/workflows
+.github/workflows/*
+!.github/workflows/plus-ci.yml
 # Temporary files
 *.tmp
 *.temp
@@ -43,8 +44,10 @@ logs/
 # Claude Code
 .claude/
 
-# Documentation (local only)
-docs/
+# Documentation (local only, except Plus deliverables)
+docs/*
+!docs/PLUS.md
+!docs/VALIDATION.md
 
 # Zotero plugin specific
 zotero-mcp-plugin/build/

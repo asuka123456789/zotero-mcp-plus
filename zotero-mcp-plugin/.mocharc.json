@@ -1,4 +1,4 @@
 {
-  "spec": ["test/**/*.test.ts"],
-  "node-option": ["experimental-strip-types", "no-warnings"]
+  "spec": ["test/httpRequestReader.test.ts", "test/unit/**/*.test.ts"],
+  "node-option": ["experimental-transform-types", "no-warnings"]
 }

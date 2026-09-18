@@ -16,7 +16,7 @@ export function getCollectionPath(collection: Zotero.Collection): string {
     if (current.parentKey) {
       current = Zotero.Collections.getByLibraryAndKey(
         current.libraryID,
-        current.parentKey
+        current.parentKey,
       );
     } else {
       current = null;
@@ -39,7 +39,7 @@ export function getCollectionDepth(collection: Zotero.Collection): number {
     depth++;
     current = Zotero.Collections.getByLibraryAndKey(
       current.libraryID,
-      current.parentKey
+      current.parentKey,
     );
   }
 
@@ -103,7 +103,9 @@ export function formatCollectionTree(collection: Zotero.Collection): any {
   const formatted: any = formatCollectionBrief(collection);
   const childCollectionIDs = collection.getChildCollections(true);
   if (childCollectionIDs.length > 0) {
-    const children = Zotero.Collections.get(childCollectionIDs) as Zotero.Collection[];
+    const children = Zotero.Collections.get(
+      childCollectionIDs,
+    ) as Zotero.Collection[];
     formatted.subcollections = children.map(formatCollectionTree);
   } else {
     formatted.subcollections = [];

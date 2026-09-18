@@ -1,50 +1,14 @@
-# Zotero MCP Plugin
+# Zotero MCP Plus
 
-## Project Overview
-A Zotero plugin that provides MCP (Model Context Protocol) server functionality, enabling AI assistants to interact with Zotero's library data.
+基于 `cookjohn/zotero-mcp` v1.6.0 的独立派生插件；保留 MIT 许可和上游归属。
 
-## Tech Stack
-- TypeScript
-- Zotero Plugin API (Firefox/Gecko-based)
-- zotero-plugin-scaffold for building
-- SQLite for semantic search index
-
-## Key Directories
-- `src/` - TypeScript source code
-- `addon/` - Plugin assets (manifest, locales, preferences UI)
-- `.scaffold/build/` - Build output
-- `update.json` - Zotero auto-update manifest
-
-## Available Skills
-- `release` - Automate version bump, XPI build, and GitHub release. See `../.claude/skills/release.md`
-
-## Build Commands
-```bash
-npm run build      # Production build
-npm run start      # Development with hot reload
-```
-
-## Important Patterns
-
-### Preferences
-- Prefix: `extensions.zotero.zotero-mcp-plugin`
-- Defined in `addon/content/preferences.xhtml`
-- Accessed via `Zotero.Prefs.get/set`
-
-### Localization
-- English: `addon/locale/en-US/preferences.ftl`
-- Chinese: `addon/locale/zh-CN/preferences.ftl`
-
-### Release Workflow
-See `../.claude/skills/release.md` for automated release process.
-
-Key points:
-- Version in: `package.json`, `README.md`, `README-zh.md` (badge), `update.json`
-- Build: `npm run build` → `.scaffold/build/zotero-mcp-plugin.xpi`
-- `addon/` is gitignored — use `git add -f` for files under it
-- Release assets: XPI (renamed to `zotero-mcp-plugin-X.Y.Z.xpi`) + `update.json`
-
-## Code Style
-- Use ztoolkit.log for logging
-- Follow existing patterns in codebase
-- Chinese comments are acceptable
+- 源码：`src/`；运行资源：`addon/`；契约和验证记录：`../docs/`。
+- 身份、版本以 `package.json` 为准；偏好前缀为 `extensions.zotero.zotero-mcp-plus`。
+- 构建：`npm run build` → `.scaffold/build/zotero-mcp-plus.xpi`。
+- 检查：`npm run lint:check`、`npm run test:unit`、`npm audit --audit-level=moderate`。
+- 原生集成：显式设置 `ZOTERO_PLUGIN_ZOTERO_BIN_PATH` 后运行 `npm run test:integration`；仅使用包装器创建的隔离 profile/data。其他可选参数见验证记录。
+- 默认禁写、禁语义索引；写工具必须遵守预览、真人确认和幂等流程。不得把令牌当作真人授权。
+- 不在真实文库运行写入测试，不直接离线改写 `zotero.sqlite`，不迁入第三方密钥。
+- `npm run prepare-release` / `npm run release:init` 仅做本地产物检查；提交、推送及发布须符合当次用户授权，不执行隐式发布脚本。
+- 不提供在线自动更新；`example.invalid` HTTPS 地址仅满足 Zotero 安装校验，空 `update*.json` 不发布为更新服务。
+- 日志不包含 token、凭据或文献全文；不提交 `.scaffold`、个人配置或真实文库。

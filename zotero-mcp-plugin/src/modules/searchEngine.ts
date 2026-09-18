@@ -122,14 +122,18 @@ async function sortItemsWithYield(
     const item = items[i];
     let key: string;
     if (sort === "creator") {
-      key = item.getCreators().map((c) => c.lastName).join(", ").toLowerCase();
+      key = item
+        .getCreators()
+        .map((c) => c.lastName)
+        .join(", ")
+        .toLowerCase();
     } else {
       key = String(item.getField(sort as any) || "").toLowerCase();
     }
     sortKeyMap.set(item.id, key);
 
     if (i > 0 && i % 200 === 0) {
-      await new Promise(resolve => setTimeout(resolve, 0));
+      await new Promise((resolve) => setTimeout(resolve, 0));
     }
   }
 
@@ -341,8 +345,8 @@ async function performFulltextSearch(
   query: string,
   libraryID: number,
   mode: "attachment" | "note" | "both" = "both",
-  operator: "contains" | "exact" | "regex" = "contains"
-): Promise<{ itemIDs: number[], matchDetails: Map<number, any> }> {
+  operator: "contains" | "exact" | "regex" = "contains",
+): Promise<{ itemIDs: number[]; matchDetails: Map<number, any> }> {
   const matchDetails = new Map<number, any>();
   const itemIDSet = new Set<number>();
 
@@ -377,52 +381,60 @@ async function performFulltextSearch(
             matchDetails.set(targetID, {
               attachments: [],
               notes: [],
-              score: 0
+              score: 0,
             });
           }
 
           const details = matchDetails.get(targetID);
 
           // 尝试通过 SQL 直接提取 snippet，避免加载完整附件文本
-          let snippet = '';
+          let snippet = "";
           try {
             const sqlResult = await Zotero.DB.valueQueryAsync(
               `SELECT substr(content, max(1, instr(lower(content), lower(?1)) - 50), 150) FROM fulltextContent WHERE itemID = ?2`,
-              [query, attachment.id]
+              [query, attachment.id],
             );
             if (sqlResult) {
-              snippet = '...' + sqlResult + '...';
+              snippet = "..." + sqlResult + "...";
             }
           } catch (_dbErr) {
             // Fallback: 加载文本但限制前 50KB
             try {
-              const content = await attachment.attachmentText || '';
+              const content = (await attachment.attachmentText) || "";
               if (content) {
-                const searchContent = content.length > 50000 ? content.substring(0, 50000) : content;
-                const queryPos = searchContent.toLowerCase().indexOf(query.toLowerCase());
+                const searchContent =
+                  content.length > 50000
+                    ? content.substring(0, 50000)
+                    : content;
+                const queryPos = searchContent
+                  .toLowerCase()
+                  .indexOf(query.toLowerCase());
                 if (queryPos >= 0) {
                   const start = Math.max(0, queryPos - 50);
-                  const end = Math.min(searchContent.length, queryPos + query.length + 50);
-                  snippet = '...' + searchContent.substring(start, end) + '...';
+                  const end = Math.min(
+                    searchContent.length,
+                    queryPos + query.length + 50,
+                  );
+                  snippet = "..." + searchContent.substring(start, end) + "...";
                 }
               }
             } catch (_e) {
-              snippet = '';
+              snippet = "";
             }
           }
 
           details.attachments.push({
             attachmentID: attachment.id,
-            filename: attachment.attachmentFilename || '',
+            filename: attachment.attachmentFilename || "",
             snippet: snippet,
-            score: 1
+            score: 1,
           });
           details.score += 1;
         }
 
         // 每 10 个附件让出主线程
         if (i > 0 && i % 10 === 0) {
-          await new Promise(resolve => setTimeout(resolve, 0));
+          await new Promise((resolve) => setTimeout(resolve, 0));
         }
       }
     }
@@ -452,29 +464,36 @@ async function performFulltextSearch(
             matchDetails.set(targetID, {
               attachments: [],
               notes: [],
-              score: 0
+              score: 0,
             });
           }
-          
+
           const details = matchDetails.get(targetID);
           const noteContent = note.getNote();
-          let snippet = '';
-          
+          let snippet = "";
+
           // 提取匹配片段
           if (noteContent) {
-            const cleanContent = noteContent.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ');
-            const queryPos = cleanContent.toLowerCase().indexOf(query.toLowerCase());
+            const cleanContent = noteContent
+              .replace(/<[^>]*>/g, " ")
+              .replace(/\s+/g, " ");
+            const queryPos = cleanContent
+              .toLowerCase()
+              .indexOf(query.toLowerCase());
             if (queryPos >= 0) {
               const start = Math.max(0, queryPos - 50);
-              const end = Math.min(cleanContent.length, queryPos + query.length + 50);
-              snippet = '...' + cleanContent.substring(start, end) + '...';
+              const end = Math.min(
+                cleanContent.length,
+                queryPos + query.length + 50,
+              );
+              snippet = "..." + cleanContent.substring(start, end) + "...";
             }
           }
-          
+
           details.notes.push({
             noteID: note.id,
             snippet: snippet,
-            score: 1
+            score: 1,
           });
           details.score += 1;
         }
@@ -657,7 +676,12 @@ export async function handleSearchRequest(
   if (params.fulltext) {
     const mode = params.fulltextMode || "both";
     const operator = params.fulltextOperator || "contains";
-    const fulltextResult = await performFulltextSearch(params.fulltext, libraryID, mode, operator);
+    const fulltextResult = await performFulltextSearch(
+      params.fulltext,
+      libraryID,
+      mode,
+      operator,
+    );
     fulltextItemIDs = fulltextResult.itemIDs;
     fulltextMatchDetails = fulltextResult.matchDetails;
 
@@ -667,7 +691,7 @@ export async function handleSearchRequest(
         pagination: { limit, offset, total: 0, hasMore: false },
         searchTime: `${Date.now() - startTime}ms`,
         results: [],
-        searchFeatures: ["fulltext"]
+        searchFeatures: ["fulltext"],
       };
     }
   }
@@ -680,7 +704,7 @@ export async function handleSearchRequest(
     attachSearch.addCondition("itemType", "is", "attachment");
     const attachIDs = await attachSearch.search();
     let standaloneItems = (await Zotero.Items.getAsync(attachIDs)).filter(
-      (item: Zotero.Item) => !item.parentItemID
+      (item: Zotero.Item) => !item.parentItemID,
     );
 
     // 如果还有 q 参数，对文件名/标题做简单过滤
@@ -787,7 +811,7 @@ export async function handleSearchRequest(
 
   // --- 4. 执行初步搜索 ---
   let initialItemIDs: number[];
-  
+
   if (params.fulltext && fulltextItemIDs.length > 0) {
     // 如果指定了全文搜索，使用全文搜索结果
     initialItemIDs = fulltextItemIDs;
@@ -795,7 +819,7 @@ export async function handleSearchRequest(
     // 否则执行常规搜索
     initialItemIDs = await s.search();
   }
-  
+
   if (initialItemIDs.length === 0) {
     return {
       query: params,
@@ -814,9 +838,18 @@ export async function handleSearchRequest(
   const matchedTagsStats: Record<string, number> = {};
 
   const advancedFilterKeys = [
-    "yearRange", "dateAddedRange", "dateModifiedRange", "numPagesRange",
-    "titleOperator", "creatorOperator", "abstractOperator",
-    "publicationTitleOperator", "language", "rights", "url", "extra",
+    "yearRange",
+    "dateAddedRange",
+    "dateModifiedRange",
+    "numPagesRange",
+    "titleOperator",
+    "creatorOperator",
+    "abstractOperator",
+    "publicationTitleOperator",
+    "language",
+    "rights",
+    "url",
+    "extra",
   ];
   const needsInMemoryFiltering =
     queryTags.length > 0 ||
@@ -843,7 +876,10 @@ export async function handleSearchRequest(
       await Zotero.Items.loadDataTypes(items);
     } else {
       // 其他排序字段需要加载 items，但限制上限
-      const cappedIDs = initialItemIDs.slice(0, Math.min(initialItemIDs.length, 2000));
+      const cappedIDs = initialItemIDs.slice(
+        0,
+        Math.min(initialItemIDs.length, 2000),
+      );
       items = await Zotero.Items.getAsync(cappedIDs);
       // #105: 未在本会话中打开过的文库（feed/群组）需要显式加载条目数据，
       // 否则 getField() 会抛 UnloadedDataException
@@ -909,7 +945,7 @@ export async function handleSearchRequest(
 
         // 每 100 条让出主线程
         if (i > 0 && i % 100 === 0) {
-          await new Promise(resolve => setTimeout(resolve, 0));
+          await new Promise((resolve) => setTimeout(resolve, 0));
         }
       }
       items = filteredItems;
@@ -925,7 +961,10 @@ export async function handleSearchRequest(
       if (sort === "relevance") {
         // 按相关性排序：对全部评分后排序
         scoredItems = items.map((item) => {
-          const { score, matchedFields } = calculateRelevanceScore(item, params);
+          const { score, matchedFields } = calculateRelevanceScore(
+            item,
+            params,
+          );
           return { item, relevanceScore: score, matchedFields };
         });
         scoredItems.sort((a, b) => {
@@ -945,9 +984,13 @@ export async function handleSearchRequest(
 
   // --- 7. 分页和格式化 ---
   // 快速路径中 items 可能已是分页后的结果，使用 initialItemIDs.length 作为总数
-  const isFastPathPaginated = !needsInMemoryFiltering && (sort === "dateAdded" || sort === "dateModified");
+  const isFastPathPaginated =
+    !needsInMemoryFiltering &&
+    (sort === "dateAdded" || sort === "dateModified");
   const total = isFastPathPaginated ? initialItemIDs.length : items.length;
-  const paginatedItems = isFastPathPaginated ? items : items.slice(offset, offset + limit);
+  const paginatedItems = isFastPathPaginated
+    ? items
+    : items.slice(offset, offset + limit);
 
   // 预构建评分 Map，避免 O(n) find
   const scoreMap = useRelevanceScoring
@@ -971,9 +1014,9 @@ export async function handleSearchRequest(
           if (attachment && attachment.isAttachment()) {
             attachments.push({
               key: attachment.key,
-              filename: attachment.attachmentFilename || '',
-              contentType: attachment.attachmentContentType || '',
-              linkMode: attachment.attachmentLinkMode
+              filename: attachment.attachmentFilename || "",
+              contentType: attachment.attachmentContentType || "",
+              linkMode: attachment.attachmentLinkMode,
             });
           }
         }
@@ -986,7 +1029,10 @@ export async function handleSearchRequest(
         formatted.attachments = [];
       }
     } catch (error) {
-      ztoolkit.log(`[SearchEngine] Error getting attachments for item ${item.key}: ${error}`, "warn");
+      ztoolkit.log(
+        `[SearchEngine] Error getting attachments for item ${item.key}: ${error}`,
+        "warn",
+      );
       formatted.attachments = [];
     }
 
@@ -1020,7 +1066,7 @@ export async function handleSearchRequest(
         mode: params.fulltextMode || "both",
         attachments: matchDetails.attachments || [],
         notes: matchDetails.notes || [],
-        totalScore: matchDetails.score || 0
+        totalScore: matchDetails.score || 0,
       };
     }
 
@@ -1028,7 +1074,7 @@ export async function handleSearchRequest(
 
     // 每 5 个 item 让出主线程，避免 UI 冻结
     if (i > 0 && i % 5 === 0) {
-      await new Promise(resolve => setTimeout(resolve, 0));
+      await new Promise((resolve) => setTimeout(resolve, 0));
     }
   }
 

@@ -5,3 +5,6 @@ node_modules
 package-lock.json
 yarn.lock
 pnpm-lock.yaml
+# 不由格式检查改写项目指导文件
+CLAUDE.md
+AGENTS.md

@@ -1,3 +1,35 @@
+import { lookupIdentifier } from "./legacyOperations.ts";
+import { version } from "../../package.json";
+import { LEGACY_TOOLS } from "./legacyToolDefinitions.ts";
+import {
+  ToolRegistry,
+  LEGACY_WRITE_TOOLS,
+  PLUS_TOOLS,
+  type ToolDefinition,
+} from "./toolRegistry.ts";
+import {
+  PLUS_PREF_PREFIX,
+  PLUS_PROTOCOL_VERSION,
+  PlusError,
+  publicError,
+  fingerprint,
+} from "./plusTypes.ts";
+import { dispatchPlusTool, setLegacyExecutor } from "./plusRuntime.ts";
+import { findStandaloneAttachments } from "./standaloneService.ts";
+
+function redactLocalPaths(value: any): any {
+  if (Array.isArray(value)) return value.map(redactLocalPaths);
+  if (!value || typeof value !== "object") return value;
+  return Object.fromEntries(
+    Object.entries(value)
+      .filter(
+        ([key]) =>
+          !["filePath", "localPath", "apiKey", "authorization"].includes(key),
+      )
+      .map(([key, child]) => [key, redactLocalPaths(child)]),
+  );
+}
+
 import {
   handleGetLibraries,
   handleSearchLibraries,
@@ -15,29 +47,27 @@ import {
   handleDeleteCollection,
   handleAddItemsToCollection,
   handleRemoveItemsFromCollection,
-} from './apiHandlers';
-import { UnifiedContentExtractor } from './unifiedContentExtractor';
-import { SmartAnnotationExtractor } from './smartAnnotationExtractor';
-import { MCPSettingsService } from './mcpSettingsService';
-import { getSemanticSearchService, SemanticSearchService } from './semantic';
+} from "./apiHandlers";
+import { UnifiedContentExtractor } from "./unifiedContentExtractor";
+import { SmartAnnotationExtractor } from "./smartAnnotationExtractor";
+import { MCPSettingsService } from "./mcpSettingsService";
+import { getSemanticSearchService, SemanticSearchService } from "./semantic";
 import {
   commitNotifierQueue,
   createNotifierQueue,
   notifierSaveOptions,
   runSerializedWrite,
-} from './deferredNotifierCommitter';
+} from "./deferredNotifierCommitter";
 
 export interface MCPRequest {
-  jsonrpc: '2.0';
+  jsonrpc: "2.0";
   id?: string | number | null;
   method: string;
   params?: any;
 }
 
-
-
 export interface MCPResponse {
-  jsonrpc: '2.0';
+  jsonrpc: "2.0";
   id: string | number | null;
   result?: any;
   error?: {
@@ -49,7 +79,7 @@ export interface MCPResponse {
 }
 
 export interface MCPNotification {
-  jsonrpc: '2.0';
+  jsonrpc: "2.0";
   method: string;
   params?: any;
 }
@@ -66,19 +96,36 @@ export interface MCPNotification {
 export class StreamableMCPServer {
   private isInitialized: boolean = false;
   private serverInfo = {
-    name: 'zotero-integrated-mcp',
-    version: '1.1.0',
+    name: "zotero-mcp-plus",
+    version,
   };
-  private clientSessions: Map<string, { initTime: Date; lastActivity: Date; clientInfo?: any }> = new Map();
+  private registry = new ToolRegistry();
 
   constructor() {
-    // No initialization needed - using direct function calls
+    setLegacyExecutor((name, args) => this.executeLegacyTool(name, args));
+    for (const definition of LEGACY_TOOLS) {
+      this.registry.register(definition, (args) =>
+        LEGACY_WRITE_TOOLS.has(definition.name)
+          ? dispatchPlusTool(definition.name, args)
+          : this.executeLegacyTool(definition.name, args),
+      );
+    }
+    for (const definition of PLUS_TOOLS) {
+      this.registry.register(definition, (args) =>
+        dispatchPlusTool(definition.name, args),
+      );
+    }
   }
 
   /**
    * Handle incoming MCP requests and return HTTP response
    */
-  async handleMCPRequest(requestBody: string): Promise<{ status: number; statusText: string; headers: any; body: string }> {
+  async handleMCPRequest(requestBody: string): Promise<{
+    status: number;
+    statusText: string;
+    headers: any;
+    body: string;
+  }> {
     let parsedRequest: unknown;
 
     try {
@@ -87,51 +134,79 @@ export class StreamableMCPServer {
       ztoolkit.log(`[StreamableMCP] Parse error: ${error}`);
 
       const errorResponse: MCPResponse = {
-        jsonrpc: '2.0',
+        jsonrpc: "2.0",
         id: null,
         error: {
           code: -32700,
-          message: 'Parse error'
-        }
+          message: "Parse error",
+        },
       };
 
       return {
         status: 400,
         statusText: "Bad Request",
         headers: { "Content-Type": "application/json; charset=utf-8" },
-        body: JSON.stringify(errorResponse)
+        body: JSON.stringify(errorResponse),
       };
     }
 
     try {
       if (Array.isArray(parsedRequest)) {
-        const batchError = this.createError(null, -32600, 'Invalid Request: batch requests are not supported');
+        const batchError = this.createError(
+          null,
+          -32600,
+          "Invalid Request: batch requests are not supported",
+        );
         return {
           status: 400,
           statusText: "Bad Request",
           headers: { "Content-Type": "application/json; charset=utf-8" },
-          body: JSON.stringify(batchError)
+          body: JSON.stringify(batchError),
         };
       }
 
-      if (!parsedRequest || typeof parsedRequest !== 'object') {
-        const invalidRequest = this.createError(null, -32600, 'Invalid Request');
+      if (!parsedRequest || typeof parsedRequest !== "object") {
+        const invalidRequest = this.createError(
+          null,
+          -32600,
+          "Invalid Request",
+        );
         return {
           status: 400,
           statusText: "Bad Request",
           headers: { "Content-Type": "application/json; charset=utf-8" },
-          body: JSON.stringify(invalidRequest)
+          body: JSON.stringify(invalidRequest),
         };
       }
 
       const request = parsedRequest as MCPRequest;
-      if (typeof request.method !== 'string' || !request.method.trim()) {
-        const invalidRequest = this.createError(null, -32600, 'Invalid Request: method is required');
+      if (
+        request.jsonrpc !== "2.0" ||
+        (request.id !== undefined &&
+          request.id !== null &&
+          typeof request.id !== "string" &&
+          typeof request.id !== "number") ||
+        (typeof request.id === "number" && !Number.isFinite(request.id))
+      ) {
+        const invalid = this.createError(null, -32600, "Invalid Request");
+        return {
+          status: 400,
+          statusText: "Bad Request",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(invalid),
+        };
+      }
+      if (typeof request.method !== "string" || !request.method.trim()) {
+        const invalidRequest = this.createError(
+          null,
+          -32600,
+          "Invalid Request: method is required",
+        );
         return {
           status: 400,
           statusText: "Bad Request",
           headers: { "Content-Type": "application/json; charset=utf-8" },
-          body: JSON.stringify(invalidRequest)
+          body: JSON.stringify(invalidRequest),
         };
       }
 
@@ -144,7 +219,7 @@ export class StreamableMCPServer {
           status: 202,
           statusText: "Accepted",
           headers: { "Content-Type": "application/json; charset=utf-8" },
-          body: ''
+          body: "",
         };
       }
 
@@ -153,26 +228,25 @@ export class StreamableMCPServer {
         status,
         statusText: status === 400 ? "Bad Request" : "OK",
         headers: { "Content-Type": "application/json; charset=utf-8" },
-        body: JSON.stringify(response)
+        body: JSON.stringify(response),
       };
-      
     } catch (error) {
       ztoolkit.log(`[StreamableMCP] Error handling request: ${error}`);
-      
+
       const errorResponse: MCPResponse = {
-        jsonrpc: '2.0',
+        jsonrpc: "2.0",
         id: null,
         error: {
           code: -32603,
-          message: 'Internal error'
-        }
+          message: "Internal error",
+        },
       };
-      
+
       return {
         status: 400,
         statusText: "Bad Request",
         headers: { "Content-Type": "application/json; charset=utf-8" },
-        body: JSON.stringify(errorResponse)
+        body: JSON.stringify(errorResponse),
       };
     }
   }
@@ -180,91 +254,85 @@ export class StreamableMCPServer {
   /**
    * Process individual MCP requests
    */
-  private async processRequest(request: MCPRequest): Promise<MCPResponse | null> {
+  private async processRequest(
+    request: MCPRequest,
+  ): Promise<MCPResponse | null> {
     const isNotification = this.isNotificationRequest(request);
 
     if (isNotification) {
       switch (request.method) {
-        case 'initialized':
-        case 'notifications/initialized':
+        case "initialized":
+        case "notifications/initialized":
           this.isInitialized = true;
-          ztoolkit.log('[StreamableMCP] Client initialized (notification)');
+          ztoolkit.log("[StreamableMCP] Client initialized (notification)");
           return null;
         default:
-          if (request.method.startsWith('notifications/')) {
-            ztoolkit.log(`[StreamableMCP] Ignoring unsupported notification: ${request.method}`);
+          if (request.method.startsWith("notifications/")) {
+            ztoolkit.log(
+              `[StreamableMCP] Ignoring unsupported notification: ${request.method}`,
+            );
             return null;
           }
-          return this.createError(null, -32600, `Invalid Request: id is required for method ${request.method}`);
+          return this.createError(
+            null,
+            -32600,
+            `Invalid Request: id is required for method ${request.method}`,
+          );
       }
     }
 
     try {
       switch (request.method) {
-        case 'initialize':
+        case "initialize":
           return this.handleInitialize(request);
 
-        case 'initialized':
-        case 'notifications/initialized':
+        case "initialized":
+        case "notifications/initialized":
           this.isInitialized = true;
-          ztoolkit.log('[StreamableMCP] Client initialized');
+          ztoolkit.log("[StreamableMCP] Client initialized");
           return this.createResponse(request.id ?? null, { success: true });
 
-        case 'tools/list':
+        case "tools/list":
           return this.handleToolsList(request);
 
-        case 'tools/call':
+        case "tools/call":
           return await this.handleToolCall(request);
 
-        case 'resources/list':
+        case "resources/list":
           return this.handleResourcesList(request);
 
-        case 'prompts/list':
+        case "prompts/list":
           return this.handlePromptsList(request);
 
-        case 'ping':
+        case "ping":
           return this.handlePing(request);
 
         default:
-          return this.createError(request.id ?? null, -32601, `Method not found: ${request.method}`);
+          return this.createError(
+            request.id ?? null,
+            -32601,
+            `Method not found: ${request.method}`,
+          );
       }
     } catch (error) {
-      ztoolkit.log(`[StreamableMCP] Error processing ${request.method}: ${error}`);
-      return this.createError(request.id ?? null, -32603, 'Internal error');
+      ztoolkit.log(
+        `[StreamableMCP] Error processing ${request.method}: ${error}`,
+      );
+      return this.createError(request.id ?? null, -32603, "Internal error");
     }
   }
 
   private handleInitialize(request: MCPRequest): MCPResponse {
-    // Extract client info from initialize request
-    const clientInfo = request.params?.clientInfo || {};
-    const sessionId = this.generateSessionId();
-    
-    // Store session info
-    this.clientSessions.set(sessionId, {
-      initTime: new Date(),
-      lastActivity: new Date(),
-      clientInfo
-    });
-    
-    ztoolkit.log(`[StreamableMCP] Client initialized with session: ${sessionId}, client: ${clientInfo.name || 'unknown'}`);
-    
-    // Create standard MCP initialize response (no custom fields)
+    if (typeof request.params?.protocolVersion !== "string") {
+      return this.createError(request.id ?? null, -32602, "缺少协议版本");
+    }
     return this.createResponse(request.id ?? null, {
-      protocolVersion: '2024-11-05',
-      capabilities: {
-        tools: {
-          listChanged: true,
-        },
-        logging: {},
-        prompts: {},
-        resources: {},
-      },
+      protocolVersion: PLUS_PROTOCOL_VERSION,
+      capabilities: { tools: {} },
       serverInfo: this.serverInfo,
+      instructions:
+        "文库修改默认只预览。必须先向用户展示副作用并得到确认，才能携带 confirmationToken 和 idempotencyKey 执行。任务成功与否以逐项结果为准。",
     });
-  }
-
-  private generateSessionId(): string {
-    return 'mcp-session-' + Date.now().toString(36) + '-' + Math.random().toString(36).substr(2, 9);
   }
 
   private handleResourcesList(request: MCPRequest): MCPResponse {
@@ -295,1139 +363,93 @@ export class StreamableMCPServer {
     return 200;
   }
 
+  public listTools(): ToolDefinition[] {
+    return this.registry.list();
+  }
 
   private handleToolsList(request: MCPRequest): MCPResponse {
-    const tools = [
-      {
-        name: 'get_libraries',
-        description: 'List all Zotero libraries available in the current client. Returns minimal library metadata for each library as a paginated array.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            limit: { type: 'number', description: 'Maximum results to return' },
-            offset: { type: 'number', description: 'Pagination offset' },
-          },
-        },
-      },
-      {
-        name: 'search_library',
-        description: 'Search the Zotero library with advanced parameters, boolean operators, relevance scoring, and pagination. Results are from user\'s personal library. Use itemKey with get_content for full text. To find standalone PDFs without metadata, use itemType="attachment" with includeAttachments="true".',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            libraryID: {
-              type: 'number',
-              description: 'Optional target Zotero library ID. Defaults to the user library when omitted.'
-            },
-            q: { type: 'string', description: 'General search query' },
-            title: { type: 'string', description: 'Title search' },
-            titleOperator: {
-              type: 'string',
-              enum: ['contains', 'exact', 'startsWith', 'endsWith', 'regex'],
-              description: 'Title search operator'
-            },
-            yearRange: { type: 'string', description: 'Year range (e.g., "2020-2023")' },
-            fulltext: { type: 'string', description: 'Full-text search in attachments and notes' },
-            fulltextMode: {
-              type: 'string',
-              enum: ['attachment', 'note', 'both'],
-              description: 'Full-text search mode: attachment (PDFs only), note (notes only), both (default)'
-            },
-            fulltextOperator: {
-              type: 'string',
-              enum: ['contains', 'exact', 'regex'],
-              description: 'Full-text search operator (default: contains)'
-            },
-            itemType: {
-              type: 'string',
-              description: 'Filter by item type (e.g., "attachment" to list standalone files like PDFs imported without metadata, "journalArticle", "book", etc.)'
-            },
-            includeAttachments: {
-              type: 'string',
-              enum: ['true', 'false'],
-              description: 'Include standalone attachment items (e.g., PDFs without parent item) in results. Must be "true" when itemType is "attachment". Default: false.'
-            },
-            mode: {
-              type: 'string',
-              enum: ['minimal', 'preview', 'standard', 'complete'],
-              description: 'Processing mode: minimal (30 results), preview (100), standard (adaptive), complete (500+). Uses user default if not specified.'
-            },
-            relevanceScoring: { type: 'boolean', description: 'Enable relevance scoring' },
-            sort: {
-              type: 'string',
-              enum: ['relevance', 'date', 'title', 'year'],
-              description: 'Sort order'
-            },
-            limit: { type: 'number', description: 'Maximum results to return (overrides mode default)' },
-            offset: { type: 'number', description: 'Pagination offset' },
-          },
-        },
-      },
-      {
-        name: 'search_libraries',
-        description: 'Search libraries by name',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            q: { type: 'string', description: 'Library name search query' },
-            limit: { type: 'number', description: 'Maximum results to return' },
-            offset: { type: 'number', description: 'Pagination offset' },
-          },
-          required: ['q'],
-        },
-      },
-      {
-        name: 'search_annotations',
-        description: 'Search and filter annotations (highlights, notes, comments) by query, colors, or tags. Returns user\'s personal research notes with relevance scoring. Preserve exact wording when quoting.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            libraryID: {
-              type: 'number',
-              description: 'Optional target Zotero library ID. Defaults to the user library when omitted.'
-            },
-            q: { type: 'string', description: 'Search query (optional if colors or tags provided)' },
-            itemKeys: {
-              type: 'array',
-              items: { type: 'string' },
-              description: 'Limit search to specific items'
-            },
-            types: {
-              type: 'array',
-              items: {
-                type: 'string',
-                enum: ['note', 'highlight', 'annotation', 'ink', 'text', 'image']
-              },
-              description: 'Types of annotations to search'
-            },
-            colors: {
-              type: 'array',
-              items: { type: 'string' },
-              description: 'Filter by colors. Use hex codes (#ffd400) or names (yellow, red, green, blue, purple, orange). Common mappings: yellow=question, red=error/important, green=agree, blue=info, purple=definition'
-            },
-            tags: {
-              type: 'array',
-              items: { type: 'string' },
-              description: 'Filter by tags attached to annotations'
-            },
-            mode: {
-              type: 'string',
-              enum: ['standard', 'preview', 'complete', 'minimal'],
-              description: 'Content processing mode (uses user setting default if not specified)'
-            },
-            maxTokens: {
-              type: 'number',
-              description: 'Token budget (uses user setting default if not specified)'
-            },
-            minRelevance: {
-              type: 'number',
-              minimum: 0,
-              maximum: 1,
-              default: 0.1,
-              description: 'Minimum relevance threshold (only applies when q is provided)'
-            },
-            limit: { type: 'number', default: 15, description: 'Maximum results' },
-            offset: { type: 'number', default: 0, description: 'Pagination offset' }
-          },
-          description: 'Requires at least one of: q (query), colors, or tags'
-        },
-      },
-      {
-        name: 'get_item_details',
-        description: 'Get detailed bibliographic metadata for a specific item (title, authors, dates, identifiers, attachments, notes, tags). Use get_content for full text. Suitable for generating citations and references.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            libraryID: {
-              type: 'number',
-              description: 'Optional target Zotero library ID. Defaults to the user library when omitted.'
-            },
-            itemKey: { type: 'string', description: 'Unique item key' },
-            mode: {
-              type: 'string',
-              enum: ['minimal', 'preview', 'standard', 'complete'],
-              description: 'Processing mode: minimal (basic info), preview (key fields), standard (comprehensive), complete (all fields). Uses user default if not specified.'
-            },
-          },
-          required: ['itemKey'],
-        },
-      },
-      {
-        name: 'get_annotations',
-        description: 'Get annotations and notes for specific items with color/tag filtering. REQUIRED: provide one of itemKey, annotationId, or annotationIds (use search_library first to find the itemKey; use search_annotations to search by colors/tags across the library). Returns user\'s personal highlights and comments from PDFs. Preserve exact wording when quoting.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            libraryID: {
-              type: 'number',
-              description: 'Optional target Zotero library ID. Defaults to the user library when omitted.'
-            },
-            itemKey: { type: 'string', description: 'Get all annotations for this item' },
-            annotationId: { type: 'string', description: 'Get specific annotation by ID' },
-            annotationIds: {
-              type: 'array',
-              items: { type: 'string' },
-              description: 'Get multiple annotations by IDs'
-            },
-            types: {
-              type: 'array',
-              items: {
-                type: 'string',
-                enum: ['note', 'highlight', 'annotation', 'ink', 'text', 'image']
-              },
-              default: ['note', 'highlight', 'annotation'],
-              description: 'Types of annotations to include'
-            },
-            colors: {
-              type: 'array',
-              items: { type: 'string' },
-              description: 'Filter by colors. Use hex codes (#ffd400) or names (yellow, red, green, blue, purple, orange). Example: ["yellow", "red"] to get question and error annotations'
-            },
-            tags: {
-              type: 'array',
-              items: { type: 'string' },
-              description: 'Filter by tags attached to annotations'
-            },
-            mode: {
-              type: 'string',
-              enum: ['standard', 'preview', 'complete', 'minimal'],
-              description: 'Content processing mode (uses user setting default if not specified)'
-            },
-            maxTokens: {
-              type: 'number',
-              description: 'Token budget (uses user setting default if not specified)'
-            },
-            limit: { type: 'number', default: 20, description: 'Maximum results' },
-            offset: { type: 'number', default: 0, description: 'Pagination offset' }
-          },
-          description: 'Requires either itemKey, annotationId, or annotationIds parameter'
-        },
-      },
-      {
-        name: 'get_content',
-        description: 'Get full-text content from PDFs, attachments, notes, and abstracts. May contain OCR artifacts. When user asks for complete text, provide it without summarization.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            libraryID: {
-              type: 'number',
-              description: 'Optional target Zotero library ID. Defaults to the user library when omitted.'
-            },
-            itemKey: { type: 'string', description: 'Item key to get all content from this item' },
-            attachmentKey: { type: 'string', description: 'Attachment key to get content from specific attachment' },
-            mode: {
-              type: 'string',
-              enum: ['minimal', 'preview', 'standard', 'complete'],
-              description: 'Content processing mode: minimal (500 chars, fastest), preview (1.5K chars, quick scan), standard (3K chars, balanced), complete (unlimited, complete content). Uses user default if not specified.'
-            },
-            include: {
-              type: 'object',
-              properties: {
-                pdf: { type: 'boolean', default: true, description: 'Include PDF attachments content' },
-                attachments: { type: 'boolean', default: true, description: 'Include other attachments content' },
-                notes: { type: 'boolean', default: true, description: 'Include notes content' },
-                abstract: { type: 'boolean', default: true, description: 'Include abstract' },
-                webpage: { type: 'boolean', default: false, description: 'Include webpage snapshots (auto-enabled in standard/complete modes)' }
-              },
-              description: 'Content types to include (only applies to itemKey)'
-            },
-            contentControl: {
-              type: 'object',
-              properties: {
-                preserveOriginal: { type: 'boolean', default: true, description: 'Always preserve original text structure when processing' },
-                allowExtended: { type: 'boolean', default: false, description: 'Allow retrieving more content than mode default when important' },
-                expandIfImportant: { type: 'boolean', default: false, description: 'Expand content length for high-importance content' },
-                maxContentLength: { type: 'number', description: 'Override maximum content length for this request' },
-                prioritizeCompleteness: { type: 'boolean', default: false, description: 'Prioritize complete sentences/paragraphs over strict length limits' },
-                standardExpansion: {
-                  type: 'object',
-                  properties: {
-                    enabled: { type: 'boolean', default: false, description: 'Enable standard content expansion' },
-                    trigger: { 
-                      type: 'string', 
-                      enum: ['high_importance', 'user_query', 'context_needed'],
-                      default: 'high_importance',
-                      description: 'Trigger condition for standard expansion'
-                    },
-                    maxExpansionRatio: { type: 'number', default: 2.0, minimum: 1.0, maximum: 10.0, description: 'Maximum expansion ratio (1.0 = no expansion, 2.0 = double)' }
-                  },
-                  description: 'Smart expansion configuration'
-                }
-              },
-              description: 'Advanced content control parameters to override mode defaults'
-            },
-            format: { 
-              type: 'string', 
-              enum: ['json', 'text'],
-              default: 'json',
-              description: 'Output format: json (structured with metadata) or text (plain text)' 
-            }
-          },
-          description: 'Requires either itemKey or attachmentKey parameter'
-        },
-      },
-      {
-        name: 'get_collections',
-        description: 'Get collections in the library. By default returns a flat, paginated list of top-level collections. Use recursive=true to retrieve the complete nested collection tree (all levels) in one call. Use parentCollection to scope to a specific parent\'s direct children.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            libraryID: {
-              type: 'number',
-              description: 'Optional target Zotero library ID. Defaults to the user library when omitted.'
-            },
-            mode: {
-              type: 'string',
-              enum: ['minimal', 'preview', 'standard', 'complete'],
-              description: 'Processing mode: minimal (20 collections), preview (50), standard (100), complete (500+). Uses user default if not specified. Ignored when recursive=true.'
-            },
-            limit: { type: 'number', description: 'Maximum results to return (overrides mode default). Ignored when recursive=true.' },
-            offset: { type: 'number', description: 'Pagination offset. Ignored when recursive=true.' },
-            recursive: {
-              type: 'boolean',
-              description: 'When true, recursively return the full nested collection tree. Each collection includes a subcollections array of its children. Pagination is ignored.'
-            },
-            parentCollection: {
-              type: 'string',
-              description: 'Key of a parent collection. When provided, returns direct children of that collection instead of top-level collections.'
-            },
-          },
-        },
-      },
-      {
-        name: 'search_collections',
-        description: 'Search collections by name',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            libraryID: {
-              type: 'number',
-              description: 'Optional target Zotero library ID. Defaults to the user library when omitted.'
-            },
-            q: { type: 'string', description: 'Collection name search query' },
-            limit: { type: 'number', description: 'Maximum results to return' },
-          },
-        },
-      },
-      {
-        name: 'get_collection_details',
-        description: 'Get detailed information about a specific collection',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            collectionKey: { type: 'string', description: 'Collection key' },
-            libraryID: {
-              type: 'number',
-              description: 'Optional target Zotero library ID. Defaults to the user library when omitted.'
-            },
-          },
-          required: ['collectionKey'],
-        },
-      },
-      {
-        name: 'get_collection_items',
-        description: 'Get items in a specific collection',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            collectionKey: { type: 'string', description: 'Collection key' },
-            libraryID: {
-              type: 'number',
-              description: 'Optional target Zotero library ID. Defaults to the user library when omitted.'
-            },
-            limit: { type: 'number', description: 'Maximum results to return' },
-            offset: { type: 'number', description: 'Pagination offset' },
-          },
-          required: ['collectionKey'],
-        },
-      },
-      {
-        name: 'get_subcollections',
-        description: 'Get subcollections (child collections) of a specific collection. Use recursive=true to retrieve the full nested hierarchy of all descendant collections.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            collectionKey: { type: 'string', description: 'Parent collection key' },
-            libraryID: {
-              type: 'number',
-              description: 'Optional target Zotero library ID. Defaults to the user library when omitted.'
-            },
-            limit: { type: 'number', description: 'Maximum results to return (default: 100). Ignored when recursive=true.' },
-            offset: { type: 'number', description: 'Pagination offset (default: 0). Ignored when recursive=true.' },
-            recursive: { 
-              type: 'boolean', 
-              description: 'When true, recursively return all descendant subcollections as a nested tree (default: false).' 
-            },
-          },
-          required: ['collectionKey'],
-        },
-      },
-      {
-        name: 'create_collection',
-        description: 'Create a new collection in the library. Optionally nest it under a parent collection.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            libraryID: {
-              type: 'number',
-              description: 'Optional target Zotero library ID. Defaults to the user library when omitted.'
-            },
-            name: { type: 'string', description: 'Name of the new collection' },
-            parentCollection: {
-              type: 'string',
-              description: 'Key of the parent collection. If omitted, creates a top-level collection.'
-            },
-          },
-          required: ['name'],
-        },
-      },
-      {
-        name: 'update_collection',
-        description: 'Rename or move an existing collection. Provide name to rename, parentCollection to move (empty string moves to top level).',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            libraryID: {
-              type: 'number',
-              description: 'Optional target Zotero library ID. Defaults to the user library when omitted.'
-            },
-            collectionKey: { type: 'string', description: 'Key of the collection to update' },
-            name: { type: 'string', description: 'New name for the collection' },
-            parentCollection: {
-              type: 'string',
-              description: 'Key of the new parent collection. Use empty string "" to move to top level.'
-            },
-          },
-          required: ['collectionKey'],
-        },
-      },
-      {
-        name: 'delete_collection',
-        description: 'Delete a collection. WARNING: This is a destructive operation. By default, items in the collection are NOT deleted (only removed from the collection). Set deleteItems=true to also send items to trash.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            libraryID: {
-              type: 'number',
-              description: 'Optional target Zotero library ID. Defaults to the user library when omitted.'
-            },
-            collectionKey: { type: 'string', description: 'Key of the collection to delete' },
-            deleteItems: {
-              type: 'boolean',
-              description: 'If true, also send items in the collection to trash. Default: false (items remain in library).'
-            },
-          },
-          required: ['collectionKey'],
-        },
-      },
-      {
-        name: 'add_items_to_collection',
-        description: 'Add one or more items to a collection by their item keys.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            libraryID: {
-              type: 'number',
-              description: 'Optional target Zotero library ID. Defaults to the user library when omitted.'
-            },
-            collectionKey: { type: 'string', description: 'Key of the target collection' },
-            itemKeys: {
-              type: 'array',
-              items: { type: 'string' },
-              description: 'Array of item keys to add to the collection'
-            },
-          },
-          required: ['collectionKey', 'itemKeys'],
-        },
-      },
-      {
-        name: 'remove_items_from_collection',
-        description: 'Remove one or more items from a collection. Items are NOT deleted from the library, only removed from this collection.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            libraryID: {
-              type: 'number',
-              description: 'Optional target Zotero library ID. Defaults to the user library when omitted.'
-            },
-            collectionKey: { type: 'string', description: 'Key of the collection' },
-            itemKeys: {
-              type: 'array',
-              items: { type: 'string' },
-              description: 'Array of item keys to remove from the collection'
-            },
-          },
-          required: ['collectionKey', 'itemKeys'],
-        },
-      },
-      {
-        name: 'search_fulltext',
-        description: 'Search within full-text content of all documents. Returns matching passages with context. Use get_content with itemKey for complete text of a result.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            libraryID: {
-              type: 'number',
-              description: 'Optional target Zotero library ID. Defaults to the user library when omitted.'
-            },
-            q: { type: 'string', description: 'Search query' },
-            itemKeys: { 
-              type: 'array', 
-              items: { type: 'string' },
-              description: 'Limit search to specific items (optional)' 
-            },
-            mode: {
-              type: 'string',
-              enum: ['minimal', 'preview', 'standard', 'complete'],
-              description: 'Processing mode: minimal (100 context), preview (200), standard (adaptive), complete (400+). Uses user default if not specified.'
-            },
-            contextLength: { type: 'number', description: 'Context length around matches (overrides mode default)' },
-            maxResults: { type: 'number', description: 'Maximum results to return (overrides mode default)' },
-            caseSensitive: { type: 'boolean', description: 'Case sensitive search (default: false)' },
-          },
-          required: ['q'],
-        },
-      },
-      {
-        name: 'get_item_abstract',
-        description: 'Get the abstract/summary of a specific item. Typically the author\'s own summary from the original publication.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            libraryID: {
-              type: 'number',
-              description: 'Optional target Zotero library ID. Defaults to the user library when omitted.'
-            },
-            itemKey: { type: 'string', description: 'Item key' },
-            format: {
-              type: 'string',
-              enum: ['json', 'text'],
-              description: 'Response format (default: json)'
-            },
-          },
-          required: ['itemKey'],
-        },
-      },
-      // Semantic Search Tools
-      {
-        name: 'semantic_search',
-        description: 'AI-powered semantic search using embeddings. Finds conceptually related content even without exact keyword matches. Combine with keyword search (search_library, search_fulltext) for comprehensive results.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            query: {
-              type: 'string',
-              description: 'Natural language search query (e.g., "machine learning in healthcare")'
-            },
-            topK: {
-              type: 'number',
-              description: 'Number of results to return (default: 10)'
-            },
-            minScore: {
-              type: 'number',
-              description: 'Minimum similarity score 0-1 (default: 0.3)'
-            },
-            language: {
-              type: 'string',
-              enum: ['zh', 'en', 'all'],
-              description: 'Filter by language (default: all)'
-            }
-          },
-          required: ['query']
-        }
-      },
-      {
-        name: 'find_similar',
-        description: 'Find items semantically similar to a given item using AI embeddings. Useful for expanding research from a known relevant paper and discovering thematic clusters.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            itemKey: {
-              type: 'string',
-              description: 'The item key to find similar items for'
-            },
-            topK: {
-              type: 'number',
-              description: 'Number of similar items to return (default: 5)'
-            },
-            minScore: {
-              type: 'number',
-              description: 'Minimum similarity score 0-1 (default: 0.5)'
-            }
-          },
-          required: ['itemKey']
-        }
-      },
-      {
-        name: 'semantic_status',
-        description: 'Get the status of the semantic search service including index statistics.',
-        inputSchema: {
-          type: 'object',
-          properties: {}
-        }
-      },
-      // Full-text Database Tool (read-only operations)
-      {
-        name: 'fulltext_database',
-        description: 'Access the cached full-text content database (read-only). Faster than re-extracting from Zotero. Actions: list (cached items), search (find text), get (retrieve content), stats (database info).',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            action: {
-              type: 'string',
-              enum: ['list', 'search', 'get', 'stats'],
-              description: 'Action: list (show cached items), search (search within content), get (get full content), stats (database statistics)'
-            },
-            query: {
-              type: 'string',
-              description: 'Search query (required for search action)'
-            },
-            itemKeys: {
-              type: 'array',
-              items: { type: 'string' },
-              description: 'Item keys for get action'
-            },
-            limit: {
-              type: 'number',
-              description: 'Maximum results to return (default: 20 for list/search)'
-            },
-            caseSensitive: {
-              type: 'boolean',
-              description: 'Case sensitive search (default: false)'
-            }
-          },
-          required: ['action']
-        }
-      },
-      // Write Tools
-      {
-        name: 'write_note',
-        description: 'Create or modify Zotero notes. Supports child notes (attached to items), standalone notes, updating, or appending. Markdown is auto-converted to HTML. Confirm with user before writing.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            libraryID: {
-              type: 'number',
-              description: 'Optional target Zotero library ID. Defaults to the user library when omitted.'
-            },
-            action: {
-              type: 'string',
-              enum: ['create', 'update', 'append'],
-              description: 'create: new note, update: replace content, append: add to end'
-            },
-            parentKey: {
-              type: 'string',
-              description: 'Item key to attach note to (create action only, omit for standalone note)'
-            },
-            noteKey: {
-              type: 'string',
-              description: 'Existing note key (required for update/append actions)'
-            },
-            content: {
-              type: 'string',
-              description: 'Note content in HTML or Markdown format. Markdown is auto-converted to HTML for Zotero storage.'
-            },
-            tags: {
-              type: 'array',
-              items: { type: 'string' },
-              description: 'Tags to add to the note'
-            }
-          },
-          required: ['action', 'content']
-        }
-      },
-      {
-        name: 'write_tag',
-        description: 'Add, remove, or replace tags on Zotero items. Works on any item type. Response includes before/after tag lists for verification. Confirm with user before executing.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            libraryID: {
-              type: 'number',
-              description: 'Optional target Zotero library ID. Defaults to the user library when omitted.'
-            },
-            action: {
-              type: 'string',
-              enum: ['add', 'remove', 'set'],
-              description: 'add: add tags (keep existing), remove: remove specific tags, set: replace all tags with provided list'
-            },
-            itemKey: {
-              type: 'string',
-              description: 'Item key to modify tags on'
-            },
-            tags: {
-              type: 'array',
-              items: { type: 'string' },
-              description: 'Tags to add/remove/set'
-            }
-          },
-          required: ['action', 'itemKey', 'tags']
-        }
-      },
-      {
-        name: 'write_metadata',
-        description: 'Update metadata fields on Zotero items (title, abstract, date, URL, DOI, creators, etc.). Only works on regular items, not notes or attachments. Confirm with user before executing.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            libraryID: {
-              type: 'number',
-              description: 'Optional target Zotero library ID. Defaults to the user library when omitted.'
-            },
-            itemKey: {
-              type: 'string',
-              description: 'Item key to update metadata on'
-            },
-            fields: {
-              type: 'object',
-              description: 'Fields to update. Common fields: title, abstractNote, date, url, DOI, language, shortTitle, volume, issue, pages, publisher, place, ISBN, ISSN, extra, rights, series, seriesNumber, edition, numPages, journalAbbreviation, publicationTitle, bookTitle',
-              additionalProperties: { type: 'string' }
-            },
-            creators: {
-              type: 'array',
-              description: 'Set the creators list (replaces all existing creators). Each creator has creatorType (author/editor/translator/etc.), and either firstName+lastName or name (for organizations).',
-              items: {
-                type: 'object',
-                properties: {
-                  creatorType: {
-                    type: 'string',
-                    description: 'Creator type: author, editor, translator, contributor, bookAuthor, seriesEditor, reviewedAuthor, etc.'
-                  },
-                  firstName: { type: 'string', description: 'First name (for individuals)' },
-                  lastName: { type: 'string', description: 'Last name (for individuals)' },
-                  name: { type: 'string', description: 'Full name (for organizations, use instead of firstName/lastName)' }
-                },
-                required: ['creatorType']
-              }
-            }
-          },
-          required: ['itemKey']
-        }
-      },
-      {
-        name: 'write_item',
-        description: 'Create a new Zotero item, re-parent existing attachments, or import a local file as an attachment. Common workflows: (1) read PDF → extract metadata → create item → attach PDF via attachmentKeys; (2) convert PDF to Markdown → import the .md file as attachment via import action. Confirm with user before executing.',
-        inputSchema: {
-          type: 'object',
-          properties: {
-            libraryID: {
-              type: 'number',
-              description: 'Optional target Zotero library ID. Defaults to the user library when omitted.'
-            },
-            action: {
-              type: 'string',
-              enum: ['create', 'reparent', 'import'],
-              description: 'create: create a new item with metadata. reparent: move an attachment under a different parent item. import: import a local file (e.g., Markdown, PDF) as an attachment to an existing item.'
-            },
-            itemType: {
-              type: 'string',
-              description: 'Item type for create action (e.g., journalArticle, book, conferencePaper, thesis, report, webpage, preprint, bookSection, etc.)'
-            },
-            fields: {
-              type: 'object',
-              description: 'Metadata fields for create action. Common: title, abstractNote, date, url, DOI, language, volume, issue, pages, publisher, place, publicationTitle, bookTitle, etc.',
-              additionalProperties: { type: 'string' }
-            },
-            creators: {
-              type: 'array',
-              description: 'Creators for create action. Each: {creatorType, firstName, lastName} or {creatorType, name} for organizations.',
-              items: {
-                type: 'object',
-                properties: {
-                  creatorType: { type: 'string', description: 'author, editor, translator, contributor, etc.' },
-                  firstName: { type: 'string' },
-                  lastName: { type: 'string' },
-                  name: { type: 'string', description: 'For organizations' }
-                },
-                required: ['creatorType']
-              }
-            },
-            tags: {
-              type: 'array',
-              items: { type: 'string' },
-              description: 'Tags to add to the new item'
-            },
-            attachmentKeys: {
-              type: 'array',
-              items: { type: 'string' },
-              description: 'For create: existing standalone attachment keys to re-parent under the new item. For reparent: attachment keys to move.'
-            },
-            parentKey: {
-              type: 'string',
-              description: 'For reparent action: the target parent item key to move attachments to'
-            },
-            filePath: {
-              type: 'string',
-              description: 'For import action: absolute path to the file to import as an attachment'
-            },
-            parentItemKey: {
-              type: 'string',
-              description: 'For import action: Zotero item key of the parent to attach the file to'
-            },
-            title: {
-              type: 'string',
-              description: 'For import action: display title for the attachment (defaults to the file name)'
-            }
-          },
-          required: ['action']
-        }
-      },
-      {
-        name: 'add_by_identifier',
-        description: "Add items to Zotero by identifier (DOI, arXiv ID, ISBN, PMID, or ADS bibcode) using Zotero's own metadata resolvers — the same pipeline as the 'Add Item by Identifier' magic-wand button. Item type, DOI, venue, authors and date all come from Zotero's translators, so prefer this over write_item whenever an identifier is available: write_item requires guessing metadata by hand, which produces wrong item types. Batches larger than 3 run as a background job; call again with jobID to poll.",
-        inputSchema: {
-          type: 'object',
-          properties: {
-            identifiers: {
-              type: 'array',
-              items: { type: 'string' },
-              description: "One identifier per entry, e.g. '10.1109/ICRA48891.2023.10160731', 'arXiv:2304.00464', '9780262035613', 'PMID: 31452104'. Prefix bare arXiv numbers with 'arXiv:'. Each entry is parsed on its own, so identifier types can be mixed freely."
-            },
-            collectionKey: {
-              type: 'string',
-              description: '8-character key of the collection to file new items into. Omit to save to the library root.'
-            },
-            libraryID: {
-              type: 'number',
-              description: 'Optional target Zotero library ID. Defaults to the user library when omitted.'
-            },
-            saveAttachments: {
-              type: 'boolean',
-              description: 'Fetch open-access PDFs along with the metadata (default true).'
-            },
-            skipExisting: {
-              type: 'boolean',
-              description: 'Skip identifiers already present in the library instead of creating duplicates (default true).'
-            },
-            fileExisting: {
-              type: 'boolean',
-              description: 'When an item already exists, also add it to the target collection. This is the only way this tool modifies existing items (default false).'
-            },
-            titleDuplicates: {
-              type: 'string',
-              enum: ['flag', 'skip', 'off'],
-              description: "How to handle an imported item whose title matches an item already in the library — this catches a preprint arriving next to its published version, which identifier matching cannot see. 'flag' (default) keeps the import and reports possibleDuplicateOf; 'skip' moves the freshly imported item to the trash and reports duplicate_trashed; 'off' disables the check."
-            },
-            dryRun: {
-              type: 'boolean',
-              description: 'Only report how Zotero parses each identifier; writes nothing (default false).'
-            },
-            delayMs: {
-              type: 'number',
-              description: 'Pause between lookups in milliseconds, to be polite to upstream APIs (default 500).'
-            },
-            async: {
-              type: 'boolean',
-              description: 'Force background-job mode even for small batches.'
-            },
-            jobID: {
-              type: 'string',
-              description: 'Poll a previously started background job instead of starting a new import.'
-            }
-          }
-        }
-      }
-    ];
-
-    // Filter out semantic tools if semantic search is disabled
-    const semanticEnabled = Zotero.Prefs.get('extensions.zotero.zotero-mcp-plugin.semantic.enabled', true);
-    const semanticToolNames = new Set(['semantic_search', 'find_similar', 'semantic_status']);
-    const filteredTools = semanticEnabled === false
-      ? tools.filter((t: any) => !semanticToolNames.has(t.name))
-      : tools;
-
-    // Filter out write tools if write operations are disabled (default: disabled)
-    const writeEnabled = Zotero.Prefs.get('extensions.zotero.zotero-mcp-plugin.write.enabled', true);
-    const writeToolNames = new Set([
-      'write_note', 'write_tag', 'write_metadata', 'write_item', 'add_by_identifier',
-    ]);
-    const finalTools = writeEnabled === true
-      ? filteredTools
-      : filteredTools.filter((t: any) => !writeToolNames.has(t.name));
-
-    return this.createResponse(request.id ?? null, { tools: finalTools });
+    return this.createResponse(request.id ?? null, { tools: this.listTools() });
   }
 
   private async handleToolCall(request: MCPRequest): Promise<MCPResponse> {
-    const { name, arguments: args } = request.params;
-    
+    const name = request.params?.name;
+    if (typeof name !== "string")
+      return this.createError(request.id ?? null, -32602, "工具名无效");
     try {
-      let result;
-      
-      switch (name) {
-        case 'get_libraries':
-          result = await this.callGetLibraries(args);
-          break;
-
-        case 'search_libraries':
-          if (!args?.q) {
-            throw new Error('q is required');
-          }
-          result = await this.callSearchLibraries(args);
-          break;
-
-        case 'search_library':
-          result = await this.callSearchLibrary(args);
-          break;
-
-        case 'search_annotations':
-          // q is optional when colors or tags filters are provided
-          if (!args?.q && !args?.colors && !args?.tags) {
-            throw new Error('Either q (query), colors, or tags filter is required');
-          }
-          result = await this.callSearchAnnotations(args);
-          break;
-
-        case 'get_item_details':
-          if (!args?.itemKey) {
-            throw new Error('itemKey is required');
-          }
-          result = await this.callGetItemDetails(args);
-          break;
-
-        case 'get_annotations':
-          if (!args?.itemKey && !args?.annotationId && !args?.annotationIds) {
-            throw new Error('Either itemKey, annotationId, or annotationIds is required');
-          }
-          result = await this.callGetAnnotations(args);
-          break;
-
-        case 'get_content':
-          if (!args?.itemKey && !args?.attachmentKey) {
-            throw new Error('Either itemKey or attachmentKey is required');
-          }
-          result = await this.callGetContent(args);
-          break;
-
-        case 'get_collections':
-          result = await this.callGetCollections(args);
-          break;
-
-        case 'search_collections':
-          result = await this.callSearchCollections(args);
-          break;
-
-        case 'get_collection_details':
-          if (!args?.collectionKey) {
-            throw new Error('collectionKey is required');
-          }
-          result = await this.callGetCollectionDetails(args);
-          break;
-
-        case 'get_collection_items':
-          if (!args?.collectionKey) {
-            throw new Error('collectionKey is required');
-          }
-          result = await this.callGetCollectionItems(args);
-          break;
-
-        case 'get_subcollections':
-          if (!args?.collectionKey) {
-            throw new Error('collectionKey is required');
-          }
-          result = await this.callGetSubcollections(args);
-          break;
-
-        case 'create_collection': {
-          const writeEnabledCC = Zotero.Prefs.get('extensions.zotero.zotero-mcp-plugin.write.enabled', true);
-          if (writeEnabledCC !== true) {
-            throw new Error('Write operations are currently disabled. Please go to Zotero → Tools → Add-ons → Zotero MCP Plugin → Preferences, and enable "Write Operations" to use this feature.');
-          }
-          if (!args?.name) {
-            throw new Error('name is required');
-          }
-          result = await runSerializedWrite(() => this.callCreateCollection(args));
-          break;
-        }
-
-        case 'update_collection': {
-          const writeEnabledUC = Zotero.Prefs.get('extensions.zotero.zotero-mcp-plugin.write.enabled', true);
-          if (writeEnabledUC !== true) {
-            throw new Error('Write operations are currently disabled. Please go to Zotero → Tools → Add-ons → Zotero MCP Plugin → Preferences, and enable "Write Operations" to use this feature.');
-          }
-          if (!args?.collectionKey) {
-            throw new Error('collectionKey is required');
-          }
-          result = await runSerializedWrite(() => this.callUpdateCollection(args));
-          break;
-        }
-
-        case 'delete_collection': {
-          const writeEnabledDC = Zotero.Prefs.get('extensions.zotero.zotero-mcp-plugin.write.enabled', true);
-          if (writeEnabledDC !== true) {
-            throw new Error('Write operations are currently disabled. Please go to Zotero → Tools → Add-ons → Zotero MCP Plugin → Preferences, and enable "Write Operations" to use this feature.');
-          }
-          if (!args?.collectionKey) {
-            throw new Error('collectionKey is required');
-          }
-          result = await runSerializedWrite(() => this.callDeleteCollection(args));
-          break;
-        }
-
-        case 'add_items_to_collection': {
-          const writeEnabledAI = Zotero.Prefs.get('extensions.zotero.zotero-mcp-plugin.write.enabled', true);
-          if (writeEnabledAI !== true) {
-            throw new Error('Write operations are currently disabled. Please go to Zotero → Tools → Add-ons → Zotero MCP Plugin → Preferences, and enable "Write Operations" to use this feature.');
-          }
-          if (!args?.collectionKey) {
-            throw new Error('collectionKey is required');
-          }
-          const addKeys = this.coerceStringArray(args?.itemKeys);
-          if (!addKeys || addKeys.length === 0) {
-            throw new Error(`itemKeys array is required, e.g. ["ABCD1234"]. Received: ${JSON.stringify(args?.itemKeys)}`);
-          }
-          result = await runSerializedWrite(() => this.callAddItemsToCollection({ ...args, itemKeys: addKeys }));
-          break;
-        }
-
-        case 'remove_items_from_collection': {
-          const writeEnabledRI = Zotero.Prefs.get('extensions.zotero.zotero-mcp-plugin.write.enabled', true);
-          if (writeEnabledRI !== true) {
-            throw new Error('Write operations are currently disabled. Please go to Zotero → Tools → Add-ons → Zotero MCP Plugin → Preferences, and enable "Write Operations" to use this feature.');
-          }
-          if (!args?.collectionKey) {
-            throw new Error('collectionKey is required');
-          }
-          const removeKeys = this.coerceStringArray(args?.itemKeys);
-          if (!removeKeys || removeKeys.length === 0) {
-            throw new Error(`itemKeys array is required, e.g. ["ABCD1234"]. Received: ${JSON.stringify(args?.itemKeys)}`);
-          }
-          result = await runSerializedWrite(() => this.callRemoveItemsFromCollection({ ...args, itemKeys: removeKeys }));
-          break;
-        }
-
-        case 'search_fulltext':
-          if (!args?.q) {
-            throw new Error('q (query) is required');
-          }
-          result = await this.callSearchFulltext(args);
-          break;
-
-        case 'get_item_abstract':
-          if (!args?.itemKey) {
-            throw new Error('itemKey is required');
-          }
-          result = await this.callGetItemAbstract(args);
-          break;
-
-        // Semantic Search Tools
-        case 'semantic_search':
-        case 'find_similar':
-        case 'semantic_status': {
-          const semEnabled = Zotero.Prefs.get('extensions.zotero.zotero-mcp-plugin.semantic.enabled', true);
-          if (semEnabled === false) {
-            throw new Error('Semantic search is disabled. Enable it in Zotero MCP Plugin preferences.');
-          }
-          if (name === 'semantic_search') {
-            if (!args?.query) throw new Error('query is required');
-            result = await this.callSemanticSearch(args);
-          } else if (name === 'find_similar') {
-            if (!args?.itemKey) throw new Error('itemKey is required');
-            result = await this.callFindSimilar(args);
-          } else {
-            result = await this.callSemanticStatus();
-          }
-          break;
-        }
-
-        case 'fulltext_database':
-          if (!args?.action) {
-            throw new Error('action is required');
-          }
-          result = await this.callFulltextDatabase(args);
-          break;
-
-        // Write Tools
-        case 'write_note': {
-          const writeEnabled = Zotero.Prefs.get('extensions.zotero.zotero-mcp-plugin.write.enabled', true);
-          if (writeEnabled !== true) {
-            throw new Error('Write operations are currently disabled. Please go to Zotero → Tools → Add-ons → Zotero MCP Plugin → Preferences, and enable "Write Operations" to use this feature.');
-          }
-          if (!args?.action || !args?.content) {
-            throw new Error('action and content are required');
-          }
-          result = await runSerializedWrite(() => this.callWriteNote(args));
-          break;
-        }
-
-        case 'write_tag': {
-          const writeEnabled2 = Zotero.Prefs.get('extensions.zotero.zotero-mcp-plugin.write.enabled', true);
-          if (writeEnabled2 !== true) {
-            throw new Error('Write operations are currently disabled. Please go to Zotero → Tools → Add-ons → Zotero MCP Plugin → Preferences, and enable "Write Operations" to use this feature.');
-          }
-          if (!args?.action || !args?.itemKey || !args?.tags) {
-            throw new Error('action, itemKey, and tags are required');
-          }
-          result = await runSerializedWrite(() => this.callWriteTag(args));
-          break;
-        }
-
-        case 'write_metadata': {
-          const writeEnabled3 = Zotero.Prefs.get('extensions.zotero.zotero-mcp-plugin.write.enabled', true);
-          if (writeEnabled3 !== true) {
-            throw new Error('Write operations are currently disabled. Please go to Zotero → Tools → Add-ons → Zotero MCP Plugin → Preferences, and enable "Write Operations" to use this feature.');
-          }
-          if (!args?.itemKey) {
-            throw new Error('itemKey is required');
-          }
-          if (!args?.fields && !args?.creators) {
-            throw new Error('At least one of fields or creators is required');
-          }
-          result = await runSerializedWrite(() => this.callWriteMetadata(args));
-          break;
-        }
-
-        case 'write_item': {
-          const writeEnabled4 = Zotero.Prefs.get('extensions.zotero.zotero-mcp-plugin.write.enabled', true);
-          if (writeEnabled4 !== true) {
-            throw new Error('Write operations are currently disabled. Please go to Zotero → Tools → Add-ons → Zotero MCP Plugin → Preferences, and enable "Write Operations" to use this feature.');
-          }
-          if (!args?.action) {
-            throw new Error('action is required');
-          }
-          result = await runSerializedWrite(() => this.callWriteItem(args));
-          break;
-        }
-
-        case 'add_by_identifier': {
-          // Polling a job and dry runs write nothing, so they stay available
-          // even when write operations are disabled.
-          const isReadOnlyCall = args?.jobID || args?.dryRun === true;
-          if (!isReadOnlyCall) {
-            const writeEnabled5 = Zotero.Prefs.get('extensions.zotero.zotero-mcp-plugin.write.enabled', true);
-            if (writeEnabled5 !== true) {
-              throw new Error('Write operations are currently disabled. Please go to Zotero → Tools → Add-ons → Zotero MCP Plugin → Preferences, and enable "Write Operations" to use this feature.');
-            }
-          }
-          if (!args?.jobID && !args?.identifiers && !args?.identifier) {
-            throw new Error('identifiers is required (an array of DOI / arXiv / ISBN / PMID / ADS strings)');
-          }
-          result = await this.callAddByIdentifier(args);
-          break;
-        }
-
-        default:
-          throw new Error(`Unknown tool: ${name}`);
-      }
-
-      // Wrap result in MCP content format with proper text type.
-      // Keep large results compact: the HTTP layer writes the body in a
-      // single synchronous call, so avoid inflating multi-MB payloads.
-      const compactJson = JSON.stringify(result);
+      const result = redactLocalPaths(
+        await this.registry.call(name, request.params.arguments ?? {}),
+      );
+      const isError = result?.success === false || Boolean(result?.error);
       return this.createResponse(request.id ?? null, {
         content: [
           {
             type: "text",
-            text: compactJson.length > 100000 ? compactJson : JSON.stringify(result, null, 2)
-          }
-        ]
+            text: typeof result === "string" ? result : JSON.stringify(result),
+          },
+        ],
+        ...(result && typeof result === "object" && !Array.isArray(result)
+          ? { structuredContent: result }
+          : {}),
+        isError,
       });
-
     } catch (error) {
-      ztoolkit.log(`[StreamableMCP] Tool call error for ${name}: ${error}`);
-      return this.createError(request.id ?? null, -32603, 
-        `Error executing ${name}: ${error instanceof Error ? error.message : String(error)}`);
+      const detail = publicError(error);
+      return this.createResponse(request.id ?? null, {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify({ success: false, error: detail }),
+          },
+        ],
+        structuredContent: { success: false, error: detail },
+        isError: true,
+      });
     }
+  }
+
+  private async executeLegacyTool(name: string, args: any): Promise<any> {
+    const handlers: Record<string, (args: any) => Promise<any>> = {
+      get_libraries: (args) => this.callGetLibraries(args),
+      search_library: (args) => this.callSearchLibrary(args),
+      search_libraries: (args) => this.callSearchLibraries(args),
+      search_annotations: (args) => this.callSearchAnnotations(args),
+      get_item_details: (args) => this.callGetItemDetails(args),
+      get_annotations: (args) => this.callGetAnnotations(args),
+      get_content: (args) => this.callGetContent(args),
+      get_collections: (args) => this.callGetCollections(args),
+      search_collections: (args) => this.callSearchCollections(args),
+      get_collection_details: (args) => this.callGetCollectionDetails(args),
+      get_collection_items: (args) => this.callGetCollectionItems(args),
+      get_subcollections: (args) => this.callGetSubcollections(args),
+      create_collection: (args) => this.callCreateCollection(args),
+      update_collection: (args) => this.callUpdateCollection(args),
+      delete_collection: (args) => this.callDeleteCollection(args),
+      add_items_to_collection: (args) => this.callAddItemsToCollection(args),
+      remove_items_from_collection: (args) =>
+        this.callRemoveItemsFromCollection(args),
+      search_fulltext: (args) => this.callSearchFulltext(args),
+      get_item_abstract: (args) => this.callGetItemAbstract(args),
+      semantic_search: (args) => this.callSemanticSearch(args),
+      find_similar: (args) => this.callFindSimilar(args),
+      semantic_status: () => this.callSemanticStatus(),
+      fulltext_database: (args) => this.callFulltextDatabase(args),
+      write_note: (args) => this.callWriteNote(args),
+      write_tag: (args) => this.callWriteTag(args),
+      write_metadata: (args) => this.callWriteMetadata(args),
+      write_item: (args) => this.callWriteItem(args),
+      add_by_identifier: (args) => this.callAddByIdentifier(args),
+    };
+    if (!handlers[name]) throw new PlusError("UNKNOWN_TOOL", "未知工具");
+    if (
+      ["semantic_search", "find_similar", "semantic_status"].includes(name) &&
+      Zotero.Prefs.get(`${PLUS_PREF_PREFIX}.semantic.enabled`, true) !== true
+    ) {
+      throw new PlusError(
+        "FEATURE_DISABLED",
+        "语义检索默认关闭；需在本地设置提供方后显式启用",
+      );
+    }
+    return handlers[name](args);
   }
 
   private async callGetLibraries(args: any): Promise<any> {
@@ -1456,47 +478,82 @@ export class StreamableMCPServer {
   }
 
   private async callSearchLibrary(args: any): Promise<any> {
+    if (args.itemType === "attachment") {
+      if (args.includeAttachments === "false") {
+        return {
+          items: [],
+          results: [],
+          data: [],
+          total: 0,
+          scannedCount: 0,
+          complete: true,
+        };
+      }
+      const found = await findStandaloneAttachments(
+        {
+          ...args,
+          sort: args.sort === "title" ? "title" : "dateAdded",
+          limit: Math.min(args.limit ?? 50, 100),
+        },
+        { pdfOnly: false },
+      );
+      const items = found.items.map((item: any) => ({
+        ...item,
+        itemKey: item.key,
+        itemType: "attachment",
+      }));
+      return { ...found, items, results: items, data: items };
+    }
     // Apply mode-based defaults before creating search params
-    const effectiveMode = args.mode || MCPSettingsService.get('content.mode');
+    const effectiveMode = args.mode || MCPSettingsService.get("content.mode");
     const modeConfig = this.getSearchModeConfiguration(effectiveMode);
-    
+
     // Apply mode defaults if not explicitly provided
     const processedArgs = {
       ...args,
-      limit: args.limit || modeConfig.limit
+      limit: args.limit || modeConfig.limit,
     };
-    
+
     const searchParams = new URLSearchParams();
     for (const [key, value] of Object.entries(processedArgs)) {
       if (value !== undefined && value !== null) {
-        if (key !== 'mode') { // Don't pass mode to API
+        if (key !== "mode") {
+          // Don't pass mode to API
           searchParams.append(key, String(value));
         }
       }
     }
-    
+
     const SEARCH_TIMEOUT_MS = 25000; // 25 秒超时，低于 keepAlive 的 30 秒
     const searchPromise = handleSearch(searchParams);
     const timeoutPromise = new Promise<never>((_, reject) => {
-      setTimeout(() => reject(new Error("Search timed out after 25 seconds. Try narrowing your query or reducing the limit.")), SEARCH_TIMEOUT_MS);
+      setTimeout(
+        () =>
+          reject(
+            new Error(
+              "Search timed out after 25 seconds. Try narrowing your query or reducing the limit.",
+            ),
+          ),
+        SEARCH_TIMEOUT_MS,
+      );
     });
     const response = await Promise.race([searchPromise, timeoutPromise]);
-    let result = response.body ? JSON.parse(response.body) : response;
-    
+    const result = response.body ? JSON.parse(response.body) : response;
+
     // Add mode information to metadata
-    if (result && typeof result === 'object') {
+    if (result && typeof result === "object") {
       result.metadata = {
         ...result.metadata,
         mode: effectiveMode,
-        appliedModeConfig: modeConfig
+        appliedModeConfig: modeConfig,
       };
-      
+
       // Remove any unwanted content array if it's empty
       if (Array.isArray(result.content) && result.content.length === 0) {
         delete result.content;
       }
     }
-    
+
     return result;
   }
 
@@ -1509,52 +566,65 @@ export class StreamableMCPServer {
 
   private async callGetItemDetails(args: any): Promise<any> {
     const { itemKey, mode, libraryID } = args;
-    
+
     // Import the specific handler for item details
-    const { handleGetItem } = await import('./apiHandlers');
-    
+    const { handleGetItem } = await import("./apiHandlers");
+
     // Get effective mode
-    const effectiveMode = mode || MCPSettingsService.get('content.mode');
-    
+    const effectiveMode = mode || MCPSettingsService.get("content.mode");
+
     // Create query params with mode-based field selection
     const queryParams = new URLSearchParams();
     if (libraryID !== undefined && libraryID !== null) {
-      queryParams.append('libraryID', String(libraryID));
+      queryParams.append("libraryID", String(libraryID));
     }
-    if (effectiveMode !== 'complete') {
+    if (effectiveMode !== "complete") {
       // Apply field filtering based on mode (this could be enhanced in apiHandlers)
       const modeConfig = this.getItemDetailsModeConfiguration(effectiveMode);
       if (modeConfig.fields) {
-        queryParams.append('fields', modeConfig.fields.join(','));
+        queryParams.append("fields", modeConfig.fields.join(","));
       }
     }
-    
+
     // Call the dedicated item details handler
     const response = await handleGetItem({ 1: itemKey }, queryParams);
-    let result = response.body ? JSON.parse(response.body) : response;
+    const result = response.body ? JSON.parse(response.body) : response;
 
     // complete mode: additionally include the item's full Zotero API JSON
     // (dateAdded/dateModified, collections, relations, extra) so complete is
     // a strict superset of standard instead of identical to it (#96)
-    if (effectiveMode === 'complete' && result && typeof result === 'object' && !result.error) {
+    if (
+      effectiveMode === "complete" &&
+      result &&
+      typeof result === "object" &&
+      !result.error
+    ) {
       try {
-        const resolvedLibraryID = (libraryID !== undefined && libraryID !== null)
-          ? Number(libraryID) : Zotero.Libraries.userLibraryID;
-        const item = await Zotero.Items.getByLibraryAndKeyAsync(resolvedLibraryID, itemKey);
+        const resolvedLibraryID =
+          libraryID !== undefined && libraryID !== null
+            ? Number(libraryID)
+            : Zotero.Libraries.userLibraryID;
+        const item = await Zotero.Items.getByLibraryAndKeyAsync(
+          resolvedLibraryID,
+          itemKey,
+        );
         if (item) {
           result.apiJSON = item.toJSON();
         }
       } catch (e) {
-        ztoolkit.log(`[StreamableMCP] get_item_details complete-mode toJSON failed: ${e}`, 'warn');
+        ztoolkit.log(
+          `[StreamableMCP] get_item_details complete-mode toJSON failed: ${e}`,
+          "warn",
+        );
       }
     }
 
     // Add mode information to metadata
-    if (result && typeof result === 'object') {
+    if (result && typeof result === "object") {
       result.metadata = {
         ...result.metadata,
         mode: effectiveMode,
-        appliedModeConfig: this.getItemDetailsModeConfiguration(effectiveMode)
+        appliedModeConfig: this.getItemDetailsModeConfiguration(effectiveMode),
       };
     }
 
@@ -1568,68 +638,91 @@ export class StreamableMCPServer {
   }
 
   private async callGetContent(args: any): Promise<any> {
-    const { itemKey, attachmentKey, include, format, mode, contentControl, libraryID } = args;
+    const {
+      itemKey,
+      attachmentKey,
+      include,
+      format,
+      mode,
+      contentControl,
+      libraryID,
+    } = args;
     const extractor = new UnifiedContentExtractor();
-    
+
     try {
       let result;
-      
+
       if (itemKey) {
         // Get content from item with unified mode control and content control parameters
-        result = await extractor.getItemContent(itemKey, include || {}, mode, contentControl, libraryID);
+        result = await extractor.getItemContent(
+          itemKey,
+          include || {},
+          mode,
+          contentControl,
+          libraryID,
+        );
       } else if (attachmentKey) {
         // Get content from specific attachment with unified mode control and content control parameters
-        result = await extractor.getAttachmentContent(attachmentKey, mode, contentControl, libraryID);
+        result = await extractor.getAttachmentContent(
+          attachmentKey,
+          mode,
+          contentControl,
+          libraryID,
+        );
       } else {
-        throw new Error('Either itemKey or attachmentKey must be provided');
+        throw new Error("Either itemKey or attachmentKey must be provided");
       }
-      
+
       // Apply format conversion if requested
-      if (format === 'text' && itemKey) {
+      if (format === "text" && itemKey) {
         return extractor.convertToText(result);
-      } else if (format === 'text' && attachmentKey) {
-        return result.content || '';
+      } else if (format === "text" && attachmentKey) {
+        return result.content || "";
       }
-      
+
       return result;
     } catch (error) {
-      ztoolkit.log(`[StreamableMCP] Error in callGetContent: ${error}`, 'error');
+      ztoolkit.log(
+        `[StreamableMCP] Error in callGetContent: ${error}`,
+        "error",
+      );
       throw error;
     }
   }
 
   private async callGetCollections(args: any): Promise<any> {
     // Apply mode-based defaults before creating search params
-    const effectiveMode = args.mode || MCPSettingsService.get('content.mode');
+    const effectiveMode = args.mode || MCPSettingsService.get("content.mode");
     const modeConfig = this.getCollectionModeConfiguration(effectiveMode);
-    
+
     // Apply mode defaults if not explicitly provided
     const processedArgs = {
       ...args,
-      limit: args.limit || modeConfig.limit
+      limit: args.limit || modeConfig.limit,
     };
-    
+
     const collectionParams = new URLSearchParams();
     for (const [key, value] of Object.entries(processedArgs)) {
       if (value !== undefined && value !== null) {
-        if (key !== 'mode') { // Don't pass mode to API
+        if (key !== "mode") {
+          // Don't pass mode to API
           collectionParams.append(key, String(value));
         }
       }
     }
-    
+
     const response = await handleGetCollections(collectionParams);
-    let result = response.body ? JSON.parse(response.body) : response;
-    
+    const result = response.body ? JSON.parse(response.body) : response;
+
     // Add mode information to metadata
-    if (result && typeof result === 'object') {
+    if (result && typeof result === "object") {
       result.metadata = {
         ...result.metadata,
         mode: effectiveMode,
-        appliedModeConfig: modeConfig
+        appliedModeConfig: modeConfig,
       };
     }
-    
+
     return result;
   }
 
@@ -1653,7 +746,10 @@ export class StreamableMCPServer {
         detailParams.append(key, String(value));
       }
     }
-    const response = await handleGetCollectionDetails({ 1: collectionKey }, detailParams);
+    const response = await handleGetCollectionDetails(
+      { 1: collectionKey },
+      detailParams,
+    );
     const result = response.body ? JSON.parse(response.body) : response;
     return result;
   }
@@ -1666,7 +762,10 @@ export class StreamableMCPServer {
         itemParams.append(key, String(value));
       }
     }
-    const response = await handleGetCollectionItems({ 1: collectionKey }, itemParams);
+    const response = await handleGetCollectionItems(
+      { 1: collectionKey },
+      itemParams,
+    );
     const result = response.body ? JSON.parse(response.body) : response;
     return result;
   }
@@ -1679,7 +778,10 @@ export class StreamableMCPServer {
         subcollectionParams.append(key, String(value));
       }
     }
-    const response = await handleGetSubcollections({ 1: collectionKey }, subcollectionParams);
+    const response = await handleGetSubcollections(
+      { 1: collectionKey },
+      subcollectionParams,
+    );
     const result = response.body ? JSON.parse(response.body) : response;
     return result;
   }
@@ -1713,9 +815,9 @@ export class StreamableMCPServer {
     if (Array.isArray(value)) {
       return value.map(String);
     }
-    if (typeof value === 'string') {
+    if (typeof value === "string") {
       const trimmed = value.trim();
-      if (trimmed.startsWith('[')) {
+      if (trimmed.startsWith("[")) {
         try {
           const parsed = JSON.parse(trimmed);
           if (Array.isArray(parsed)) return parsed.map(String);
@@ -1724,7 +826,10 @@ export class StreamableMCPServer {
         }
       }
       if (trimmed.length > 0) {
-        return trimmed.split(',').map((s) => s.trim()).filter(Boolean);
+        return trimmed
+          .split(",")
+          .map((s) => s.trim())
+          .filter(Boolean);
       }
     }
     return undefined;
@@ -1732,51 +837,58 @@ export class StreamableMCPServer {
 
   private async callAddItemsToCollection(args: any): Promise<any> {
     const { collectionKey, itemKeys, libraryID } = args;
-    const response = await handleAddItemsToCollection({ 1: collectionKey }, { itemKeys, libraryID });
+    const response = await handleAddItemsToCollection(
+      { 1: collectionKey },
+      { itemKeys, libraryID },
+    );
     return response.body ? JSON.parse(response.body) : response;
   }
 
   private async callRemoveItemsFromCollection(args: any): Promise<any> {
     const { collectionKey, itemKeys, libraryID } = args;
-    const response = await handleRemoveItemsFromCollection({ 1: collectionKey }, { itemKeys, libraryID });
+    const response = await handleRemoveItemsFromCollection(
+      { 1: collectionKey },
+      { itemKeys, libraryID },
+    );
     return response.body ? JSON.parse(response.body) : response;
   }
 
   private async callSearchFulltext(args: any): Promise<any> {
     // Apply mode-based defaults before creating search params
-    const effectiveMode = args.mode || MCPSettingsService.get('content.mode');
+    const effectiveMode = args.mode || MCPSettingsService.get("content.mode");
     const modeConfig = this.getFulltextModeConfiguration(effectiveMode);
-    
+
     // Apply mode defaults if not explicitly provided
     const processedArgs = {
       ...args,
       contextLength: args.contextLength || modeConfig.contextLength,
-      maxResults: args.maxResults || modeConfig.maxResults
+      maxResults: args.maxResults || modeConfig.maxResults,
     };
-    
+
     const searchParams = new URLSearchParams();
     for (const [key, value] of Object.entries(processedArgs)) {
       if (value !== undefined && value !== null) {
-        if (key === 'itemKeys' && Array.isArray(value)) {
-          searchParams.append(key, value.join(','));
-        } else if (key !== 'mode') { // Don't pass mode to API
+        if (key === "itemKeys" && Array.isArray(value)) {
+          searchParams.append(key, value.join(","));
+        } else if (key !== "mode") {
+          // Don't pass mode to API
           searchParams.append(key, String(value));
         }
       }
     }
-    
+
     const response = await handleSearchFulltext(searchParams);
-    let result = response.body ? JSON.parse(response.body) : response;
-    
+    const result = response.body ? JSON.parse(response.body) : response;
+
     // Add mode information to metadata
-    if (result && typeof result === 'object') {
+    if (result && typeof result === "object") {
       result.metadata = {
         ...result.metadata,
         mode: effectiveMode,
-        appliedModeConfig: modeConfig
+        appliedModeConfig: modeConfig,
       };
     }
-    
+
     return result;
   }
 
@@ -1788,9 +900,12 @@ export class StreamableMCPServer {
         abstractParams.append(key, String(value));
       }
     }
-    const response = await handleGetItemAbstract({ 1: itemKey }, abstractParams);
-    const contentType = response.headers?.['Content-Type'] || '';
-    if (contentType.startsWith('text/plain')) {
+    const response = await handleGetItemAbstract(
+      { 1: itemKey },
+      abstractParams,
+    );
+    const contentType = response.headers?.["Content-Type"] || "";
+    if (contentType.startsWith("text/plain")) {
       // format=text returns a plain-text body that must not be JSON.parsed
       return response.body;
     }
@@ -1808,26 +923,27 @@ export class StreamableMCPServer {
       const results = await semanticService.search(args.query, {
         topK: args.topK,
         minScore: args.minScore,
-        language: args.language
+        language: args.language,
       });
 
       const response = {
-        mode: 'semantic',
+        mode: "semantic",
         query: args.query,
         data: results,
         metadata: {
           extractedAt: new Date().toISOString(),
-          searchMode: 'semantic',
+          searchMode: "semantic",
           resultCount: results.length,
-          fallbackMode: semanticService.getIndexProgress().status === 'idle'
-            ? (await semanticService.getStats()).serviceStatus.fallbackMode
-            : false
-        }
+          fallbackMode:
+            semanticService.getIndexProgress().status === "idle"
+              ? (await semanticService.getStats()).serviceStatus.fallbackMode
+              : false,
+        },
       };
 
       return response;
     } catch (error) {
-      ztoolkit.log(`[StreamableMCP] Semantic search error: ${error}`, 'error');
+      ztoolkit.log(`[StreamableMCP] Semantic search error: ${error}`, "error");
       throw error;
     }
   }
@@ -1839,22 +955,22 @@ export class StreamableMCPServer {
 
       const results = await semanticService.findSimilar(args.itemKey, {
         topK: args.topK,
-        minScore: args.minScore
+        minScore: args.minScore,
       });
 
       const response = {
-        mode: 'similar',
+        mode: "similar",
         sourceItemKey: args.itemKey,
         data: results,
         metadata: {
           extractedAt: new Date().toISOString(),
-          resultCount: results.length
-        }
+          resultCount: results.length,
+        },
       };
 
       return response;
     } catch (error) {
-      ztoolkit.log(`[StreamableMCP] Find similar error: ${error}`, 'error');
+      ztoolkit.log(`[StreamableMCP] Find similar error: ${error}`, "error");
       throw error;
     }
   }
@@ -1869,7 +985,7 @@ export class StreamableMCPServer {
       // Check Int8 migration status
       let int8Status = null;
       try {
-        const { getVectorStore } = await import('./semantic/vectorStore');
+        const { getVectorStore } = await import("./semantic/vectorStore");
         const vectorStore = getVectorStore();
         await vectorStore.initialize();
         int8Status = await vectorStore.needsInt8Migration();
@@ -1878,9 +994,9 @@ export class StreamableMCPServer {
       }
 
       let message = !isReady
-        ? 'Semantic search service not initialized'
+        ? "Semantic search service not initialized"
         : stats?.serviceStatus.fallbackMode
-          ? 'Running in fallback mode (API not configured)'
+          ? "Running in fallback mode (API not configured)"
           : `Semantic search ready with ${stats?.indexStats.totalItems || 0} indexed items`;
 
       // Add Int8 migration suggestion if needed
@@ -1895,92 +1011,105 @@ export class StreamableMCPServer {
         indexProgress: progress,
         indexStats: stats?.indexStats || null,
         int8Migration: int8Status,
-        message
+        message,
       };
     } catch (error) {
-      ztoolkit.log(`[StreamableMCP] Semantic status error: ${error}`, 'error');
+      ztoolkit.log(`[StreamableMCP] Semantic status error: ${error}`, "error");
       return {
         ready: false,
-        error: String(error)
+        error: String(error),
       };
     }
   }
 
   private async callFulltextDatabase(args: any): Promise<any> {
     try {
-      const { getVectorStore } = await import('./semantic/vectorStore');
+      const { getVectorStore } = await import("./semantic/vectorStore");
       const vectorStore = getVectorStore();
       await vectorStore.initialize();
 
-      const { action, query, itemKeys, limit = 20, caseSensitive = false } = args;
+      const {
+        action,
+        query,
+        itemKeys,
+        limit = 20,
+        caseSensitive = false,
+      } = args;
 
       switch (action) {
-        case 'list': {
+        case "list": {
           const cachedItems = await vectorStore.listCachedContent();
           const limitedItems = cachedItems.slice(0, limit);
 
           return {
-            action: 'list',
+            action: "list",
             data: limitedItems,
             metadata: {
               extractedAt: new Date().toISOString(),
               totalCached: cachedItems.length,
               returned: limitedItems.length,
-              message: `Found ${cachedItems.length} items in full-text database`
-            }
+              message: `Found ${cachedItems.length} items in full-text database`,
+            },
           };
         }
 
-        case 'search': {
+        case "search": {
           if (!query) {
-            throw new Error('query is required for search action');
+            throw new Error("query is required for search action");
           }
 
-          const searchResults = await vectorStore.searchCachedContent(query, { limit, caseSensitive });
+          const searchResults = await vectorStore.searchCachedContent(query, {
+            limit,
+            caseSensitive,
+          });
 
           return {
-            action: 'search',
+            action: "search",
             query,
             data: searchResults,
             metadata: {
               extractedAt: new Date().toISOString(),
               resultCount: searchResults.length,
               caseSensitive,
-              message: `Found ${searchResults.length} items matching "${query}"`
-            }
+              message: `Found ${searchResults.length} items matching "${query}"`,
+            },
           };
         }
 
-        case 'get': {
+        case "get": {
           if (!itemKeys || itemKeys.length === 0) {
-            throw new Error('itemKeys is required for get action');
+            throw new Error("itemKeys is required for get action");
           }
 
           const contentMap = await vectorStore.getFullContentBatch(itemKeys);
-          const results: Array<{ itemKey: string; content: string | null; contentLength: number }> = [];
+          const results: Array<{
+            itemKey: string;
+            content: string | null;
+            contentLength: number;
+          }> = [];
 
           for (const key of itemKeys) {
             const content = contentMap.get(key) || null;
             results.push({
               itemKey: key,
               content,
-              contentLength: content ? content.length : 0
+              contentLength: content ? content.length : 0,
             });
           }
 
           return {
-            action: 'get',
+            action: "get",
             data: results,
             metadata: {
               extractedAt: new Date().toISOString(),
               requested: itemKeys.length,
-              found: results.filter(r => r.content !== null).length,
-              message: `Retrieved content for ${results.filter(r => r.content !== null).length}/${itemKeys.length} items`
-            }
+              found: results.filter((r) => r.content !== null).length,
+              message: `Retrieved content for ${results.filter((r) => r.content !== null).length}/${itemKeys.length} items`,
+            },
           };
         }
 
-        case 'stats': {
+        case "stats": {
           const stats = await vectorStore.getStats();
 
           // Format size nicely
@@ -1991,31 +1120,38 @@ export class StreamableMCPServer {
           };
 
           return {
-            action: 'stats',
+            action: "stats",
             data: {
               cachedItems: stats.cachedContentItems,
               cachedContentSize: stats.cachedContentSizeBytes,
-              cachedContentSizeFormatted: formatSize(stats.cachedContentSizeBytes),
+              cachedContentSizeFormatted: formatSize(
+                stats.cachedContentSizeBytes,
+              ),
               indexedItems: stats.totalItems,
               totalVectors: stats.totalVectors,
               zhVectors: stats.zhVectors,
-              enVectors: stats.enVectors
+              enVectors: stats.enVectors,
             },
             metadata: {
               extractedAt: new Date().toISOString(),
-              message: `Full-text database: ${stats.cachedContentItems} items, ${formatSize(stats.cachedContentSizeBytes)}`
-            }
+              message: `Full-text database: ${stats.cachedContentItems} items, ${formatSize(stats.cachedContentSizeBytes)}`,
+            },
           };
         }
 
         default:
-          throw new Error(`Unknown action: ${action}. Use list, search, get, or stats. Database management is done through Zotero preferences.`);
+          throw new Error(
+            `Unknown action: ${action}. Use list, search, get, or stats. Database management is done through Zotero preferences.`,
+          );
       }
     } catch (error) {
-      ztoolkit.log(`[StreamableMCP] Fulltext database error: ${error}`, 'error');
+      ztoolkit.log(
+        `[StreamableMCP] Fulltext database error: ${error}`,
+        "error",
+      );
       return {
         success: false,
-        error: String(error)
+        error: String(error),
       };
     }
   }
@@ -2025,72 +1161,84 @@ export class StreamableMCPServer {
    * Auto-detects if content is already HTML and skips conversion.
    */
   private markdownToNoteHtml(markdown: string): string {
-    if (!markdown || typeof markdown !== 'string') return '';
+    if (!markdown || typeof markdown !== "string") return "";
 
     // Detect if content is already HTML
     const trimmed = markdown.trim();
-    if (trimmed.startsWith('<') && /<\/.+>/.test(trimmed)) {
+    if (trimmed.startsWith("<") && /<\/.+>/.test(trimmed)) {
       return markdown;
     }
 
     let html = markdown;
 
     // Escape HTML entities
-    html = html.replace(/&/g, '&amp;')
-               .replace(/</g, '&lt;')
-               .replace(/>/g, '&gt;');
+    html = html
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;");
 
     // Headings (process longest first)
-    html = html.replace(/^######\s+(.+)$/gm, '<h6>$1</h6>');
-    html = html.replace(/^#####\s+(.+)$/gm, '<h5>$1</h5>');
-    html = html.replace(/^####\s+(.+)$/gm, '<h4>$1</h4>');
-    html = html.replace(/^###\s+(.+)$/gm, '<h3>$1</h3>');
-    html = html.replace(/^##\s+(.+)$/gm, '<h2>$1</h2>');
-    html = html.replace(/^#\s+(.+)$/gm, '<h1>$1</h1>');
+    html = html.replace(/^######\s+(.+)$/gm, "<h6>$1</h6>");
+    html = html.replace(/^#####\s+(.+)$/gm, "<h5>$1</h5>");
+    html = html.replace(/^####\s+(.+)$/gm, "<h4>$1</h4>");
+    html = html.replace(/^###\s+(.+)$/gm, "<h3>$1</h3>");
+    html = html.replace(/^##\s+(.+)$/gm, "<h2>$1</h2>");
+    html = html.replace(/^#\s+(.+)$/gm, "<h1>$1</h1>");
 
     // Bold + italic, bold, italic
-    html = html.replace(/\*\*\*(.+?)\*\*\*/g, '<strong><em>$1</em></strong>');
-    html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
-    html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
+    html = html.replace(/\*\*\*(.+?)\*\*\*/g, "<strong><em>$1</em></strong>");
+    html = html.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+    html = html.replace(/\*(.+?)\*/g, "<em>$1</em>");
 
     // Inline code
-    html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+    html = html.replace(/`([^`]+)`/g, "<code>$1</code>");
 
     // Links
     html = html.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>');
 
     // Horizontal rules
-    html = html.replace(/^---+$/gm, '<hr/>');
+    html = html.replace(/^---+$/gm, "<hr/>");
 
     // Unordered lists (block)
     html = html.replace(/(?:^[-*+]\s+.+$\n?)+/gm, (match) => {
-      const items = match.trim().split('\n').map((line: string) => {
-        const content = line.replace(/^[-*+]\s+/, '');
-        return `<li>${content}</li>`;
-      }).join('');
+      const items = match
+        .trim()
+        .split("\n")
+        .map((line: string) => {
+          const content = line.replace(/^[-*+]\s+/, "");
+          return `<li>${content}</li>`;
+        })
+        .join("");
       return `<ul>${items}</ul>\n`;
     });
 
     // Ordered lists (block)
     html = html.replace(/(?:^\d+\.\s+.+$\n?)+/gm, (match) => {
-      const items = match.trim().split('\n').map((line: string) => {
-        const content = line.replace(/^\d+\.\s+/, '');
-        return `<li>${content}</li>`;
-      }).join('');
+      const items = match
+        .trim()
+        .split("\n")
+        .map((line: string) => {
+          const content = line.replace(/^\d+\.\s+/, "");
+          return `<li>${content}</li>`;
+        })
+        .join("");
       return `<ol>${items}</ol>\n`;
     });
 
     // Paragraphs: split by double newline, wrap plain text blocks in <p>
     const blocks = html.split(/\n\n+/);
-    html = blocks.map((block: string) => {
-      block = block.trim();
-      if (!block) return '';
-      if (/^<(h[1-6]|ul|ol|li|blockquote|hr|div|p|pre|table)/i.test(block)) {
-        return block;
-      }
-      block = block.replace(/\n/g, '<br/>');
-      return `<p>${block}</p>`;
-    }).filter(Boolean).join('\n');
+    html = blocks
+      .map((block: string) => {
+        block = block.trim();
+        if (!block) return "";
+        if (/^<(h[1-6]|ul|ol|li|blockquote|hr|div|p|pre|table)/i.test(block)) {
+          return block;
+        }
+        block = block.replace(/\n/g, "<br/>");
+        return `<p>${block}</p>`;
+      })
+      .filter(Boolean)
+      .join("\n");
 
     return html;
   }
@@ -2099,28 +1247,38 @@ export class StreamableMCPServer {
    * Handle write_note tool calls: create, update, append notes
    */
   private async callWriteNote(args: any): Promise<any> {
-    const { action, parentKey, noteKey, content, tags, libraryID = Zotero.Libraries.userLibraryID } = args;
+    const {
+      action,
+      parentKey,
+      noteKey,
+      content,
+      tags,
+      libraryID = Zotero.Libraries.userLibraryID,
+    } = args;
 
     try {
       const htmlContent = this.markdownToNoteHtml(content);
 
       switch (action) {
-        case 'create': {
-          const note = new Zotero.Item('note');
+        case "create": {
+          const note = new Zotero.Item("note");
           note.libraryID = libraryID;
 
           if (parentKey) {
             const parentItem = await Zotero.Items.getByLibraryAndKeyAsync(
-              libraryID, parentKey
+              libraryID,
+              parentKey,
             );
             if (!parentItem) {
-              throw new Error(`Parent item not found in library ${libraryID}: ${parentKey}`);
+              throw new Error(
+                `Parent item not found in library ${libraryID}: ${parentKey}`,
+              );
             }
             if (parentItem.isNote()) {
-              throw new Error('Cannot attach a note to another note');
+              throw new Error("Cannot attach a note to another note");
             }
             if (parentItem.isAttachment()) {
-              throw new Error('Cannot attach a note to an attachment');
+              throw new Error("Cannot attach a note to an attachment");
             }
             note.parentKey = parentKey;
           }
@@ -2135,40 +1293,49 @@ export class StreamableMCPServer {
 
           const notifierQueue = createNotifierQueue();
           await note.saveTx(notifierSaveOptions(notifierQueue));
-          const notification = await commitNotifierQueue(notifierQueue, `create note ${note.key}`);
+          const notification = await commitNotifierQueue(
+            notifierQueue,
+            `create note ${note.key}`,
+          );
 
-          ztoolkit.log(`[StreamableMCP] Created note ${note.key}${parentKey ? ' attached to ' + parentKey : ' (standalone)'}`);
+          ztoolkit.log(
+            `[StreamableMCP] Created note ${note.key}${parentKey ? " attached to " + parentKey : " (standalone)"}`,
+          );
 
           return {
-            action: 'create',
+            action: "create",
             success: true,
             data: {
               noteKey: note.key,
+              verificationHash: await fingerprint(note.getNote()),
               parentKey: parentKey || null,
-              type: parentKey ? 'child' : 'standalone',
+              type: parentKey ? "child" : "standalone",
               contentPreview: content.substring(0, 200),
               contentLength: content.length,
               tags: tags || [],
-              dateCreated: note.dateAdded
+              dateCreated: note.dateAdded,
             },
             metadata: {
               extractedAt: new Date().toISOString(),
               notificationStatus: notification.status,
-              message: `Note created successfully (key: ${note.key})`
-            }
+              message: `Note created successfully (key: ${note.key})`,
+            },
           };
         }
 
-        case 'update': {
+        case "update": {
           if (!noteKey) {
-            throw new Error('noteKey is required for update action');
+            throw new Error("noteKey is required for update action");
           }
 
           const existingNote = await Zotero.Items.getByLibraryAndKeyAsync(
-            libraryID, noteKey
+            libraryID,
+            noteKey,
           );
           if (!existingNote) {
-            throw new Error(`Note not found in library ${libraryID}: ${noteKey}`);
+            throw new Error(
+              `Note not found in library ${libraryID}: ${noteKey}`,
+            );
           }
           if (!existingNote.isNote()) {
             throw new Error(`Item ${noteKey} is not a note`);
@@ -2184,44 +1351,51 @@ export class StreamableMCPServer {
 
           const notifierQueue = createNotifierQueue();
           await existingNote.saveTx(notifierSaveOptions(notifierQueue));
-          const notification = await commitNotifierQueue(notifierQueue, `update note ${noteKey}`);
+          const notification = await commitNotifierQueue(
+            notifierQueue,
+            `update note ${noteKey}`,
+          );
 
           ztoolkit.log(`[StreamableMCP] Updated note ${noteKey}`);
 
           return {
-            action: 'update',
+            action: "update",
             success: true,
             data: {
               noteKey,
+              verificationHash: await fingerprint(existingNote.getNote()),
               contentPreview: content.substring(0, 200),
               contentLength: content.length,
               tags: existingNote.getTags().map((t: any) => t.tag),
-              dateModified: existingNote.dateModified
+              dateModified: existingNote.dateModified,
             },
             metadata: {
               extractedAt: new Date().toISOString(),
               notificationStatus: notification.status,
-              message: `Note ${noteKey} updated successfully`
-            }
+              message: `Note ${noteKey} updated successfully`,
+            },
           };
         }
 
-        case 'append': {
+        case "append": {
           if (!noteKey) {
-            throw new Error('noteKey is required for append action');
+            throw new Error("noteKey is required for append action");
           }
 
           const existingNote = await Zotero.Items.getByLibraryAndKeyAsync(
-            libraryID, noteKey
+            libraryID,
+            noteKey,
           );
           if (!existingNote) {
-            throw new Error(`Note not found in library ${libraryID}: ${noteKey}`);
+            throw new Error(
+              `Note not found in library ${libraryID}: ${noteKey}`,
+            );
           }
           if (!existingNote.isNote()) {
             throw new Error(`Item ${noteKey} is not a note`);
           }
 
-          const currentHtml = existingNote.getNote() || '';
+          const currentHtml = existingNote.getNote() || "";
           const appendedHtml = currentHtml + htmlContent;
           existingNote.setNote(appendedHtml);
 
@@ -2233,37 +1407,43 @@ export class StreamableMCPServer {
 
           const notifierQueue = createNotifierQueue();
           await existingNote.saveTx(notifierSaveOptions(notifierQueue));
-          const notification = await commitNotifierQueue(notifierQueue, `append note ${noteKey}`);
+          const notification = await commitNotifierQueue(
+            notifierQueue,
+            `append note ${noteKey}`,
+          );
 
           ztoolkit.log(`[StreamableMCP] Appended to note ${noteKey}`);
 
           return {
-            action: 'append',
+            action: "append",
             success: true,
             data: {
               noteKey,
+              verificationHash: await fingerprint(existingNote.getNote()),
               appendedContentPreview: content.substring(0, 200),
               appendedContentLength: content.length,
               totalContentLength: appendedHtml.length,
               tags: existingNote.getTags().map((t: any) => t.tag),
-              dateModified: existingNote.dateModified
+              dateModified: existingNote.dateModified,
             },
             metadata: {
               extractedAt: new Date().toISOString(),
               notificationStatus: notification.status,
-              message: `Content appended to note ${noteKey} successfully`
-            }
+              message: `Content appended to note ${noteKey} successfully`,
+            },
           };
         }
 
         default:
-          throw new Error(`Unknown action: ${action}. Use create, update, or append.`);
+          throw new Error(
+            `Unknown action: ${action}. Use create, update, or append.`,
+          );
       }
     } catch (error) {
-      ztoolkit.log(`[StreamableMCP] Write note error: ${error}`, 'error');
+      ztoolkit.log(`[StreamableMCP] Write note error: ${error}`, "error");
       return {
         success: false,
-        error: String(error)
+        error: String(error),
       };
     }
   }
@@ -2272,11 +1452,17 @@ export class StreamableMCPServer {
    * Handle write_tag tool calls: add, remove, set tags on items
    */
   private async callWriteTag(args: any): Promise<any> {
-    const { action, itemKey, tags, libraryID = Zotero.Libraries.userLibraryID } = args;
+    const {
+      action,
+      itemKey,
+      tags,
+      libraryID = Zotero.Libraries.userLibraryID,
+    } = args;
 
     try {
       const item = await Zotero.Items.getByLibraryAndKeyAsync(
-        libraryID, itemKey
+        libraryID,
+        itemKey,
       );
       if (!item) {
         throw new Error(`Item not found in library ${libraryID}: ${itemKey}`);
@@ -2285,21 +1471,21 @@ export class StreamableMCPServer {
       const beforeTags = item.getTags().map((t: any) => t.tag);
 
       switch (action) {
-        case 'add': {
+        case "add": {
           for (const tag of tags) {
             item.addTag(tag, 0);
           }
           break;
         }
 
-        case 'remove': {
+        case "remove": {
           for (const tag of tags) {
             item.removeTag(tag);
           }
           break;
         }
 
-        case 'set': {
+        case "set": {
           // Remove all existing tags
           for (const existing of beforeTags) {
             item.removeTag(existing);
@@ -2312,16 +1498,21 @@ export class StreamableMCPServer {
         }
 
         default:
-          throw new Error(`Unknown action: ${action}. Use add, remove, or set.`);
+          throw new Error(
+            `Unknown action: ${action}. Use add, remove, or set.`,
+          );
       }
 
       const notifierQueue = createNotifierQueue();
       await item.saveTx(notifierSaveOptions(notifierQueue));
-      const notification = await commitNotifierQueue(notifierQueue, `write tags on ${itemKey}`);
+      const notification = await commitNotifierQueue(
+        notifierQueue,
+        `write tags on ${itemKey}`,
+      );
 
       const afterTags = item.getTags().map((t: any) => t.tag);
 
-      ztoolkit.log(`[StreamableMCP] write_tag ${action} on ${itemKey}: [${beforeTags.join(', ')}] -> [${afterTags.join(', ')}]`);
+      ztoolkit.log(`[StreamableMCP] write_tag completed: ${action}`);
 
       return {
         action,
@@ -2330,19 +1521,19 @@ export class StreamableMCPServer {
           itemKey,
           beforeTags,
           afterTags,
-          tagsModified: tags
+          tagsModified: tags,
         },
         metadata: {
           extractedAt: new Date().toISOString(),
           notificationStatus: notification.status,
-          message: `Tags ${action === 'add' ? 'added to' : action === 'remove' ? 'removed from' : 'set on'} item ${itemKey}`
-        }
+          message: `Tags ${action === "add" ? "added to" : action === "remove" ? "removed from" : "set on"} item ${itemKey}`,
+        },
       };
     } catch (error) {
-      ztoolkit.log(`[StreamableMCP] Write tag error: ${error}`, 'error');
+      ztoolkit.log(`[StreamableMCP] Write tag error: ${error}`, "error");
       return {
         success: false,
-        error: String(error)
+        error: String(error),
       };
     }
   }
@@ -2352,35 +1543,44 @@ export class StreamableMCPServer {
    */
   private async callWriteMetadata(args: any): Promise<any> {
     const { itemKey, fields, creators } = args;
-    const libraryID = args.libraryID === 0 || args.libraryID === undefined || args.libraryID === null
-      ? Zotero.Libraries.userLibraryID
-      : args.libraryID;
+    const libraryID =
+      args.libraryID === 0 ||
+      args.libraryID === undefined ||
+      args.libraryID === null
+        ? Zotero.Libraries.userLibraryID
+        : args.libraryID;
 
     try {
       const item = await Zotero.Items.getByLibraryAndKeyAsync(
-        libraryID, itemKey
+        libraryID,
+        itemKey,
       );
       if (!item) {
         throw new Error(`Item not found in library ${libraryID}: ${itemKey}`);
       }
       if (!item.isRegularItem()) {
-        throw new Error(`Item ${itemKey} is not a regular item (it is a ${item.itemType}). Use write_note for notes.`);
+        throw new Error(
+          `Item ${itemKey} is not a regular item (it is a ${item.itemType}). Use write_note for notes.`,
+        );
       }
 
-      const updatedFields: Record<string, { before: string; after: string }> = {};
+      const updatedFields: Record<string, { before: string; after: string }> =
+        {};
       let creatorsUpdated = false;
       let beforeCreators: any[] = [];
       let afterCreators: any[] = [];
 
       // Update fields
-      if (fields && typeof fields === 'object') {
+      if (fields && typeof fields === "object") {
         for (const [fieldName, value] of Object.entries(fields)) {
           try {
-            const before = String(item.getField(fieldName) || '');
+            const before = String(item.getField(fieldName) || "");
             item.setField(fieldName, String(value));
             updatedFields[fieldName] = { before, after: String(value) };
           } catch (fieldError) {
-            throw new Error(`Failed to set field "${fieldName}": ${fieldError}`);
+            throw new Error(
+              `Failed to set field "${fieldName}": ${fieldError}`,
+            );
           }
         }
       }
@@ -2390,22 +1590,24 @@ export class StreamableMCPServer {
         beforeCreators = item.getCreators().map((c: any) => ({
           creatorType: Zotero.CreatorTypes.getName(c.creatorTypeID),
           firstName: c.firstName,
-          lastName: c.lastName
+          lastName: c.lastName,
         }));
 
-        item.setCreators(creators.map((c: any) => {
-          const creatorData: any = {
-            creatorType: c.creatorType || 'author'
-          };
-          if (c.name) {
-            // Organization / single-field name
-            creatorData.name = c.name;
-          } else {
-            creatorData.firstName = c.firstName || '';
-            creatorData.lastName = c.lastName || '';
-          }
-          return creatorData;
-        }));
+        item.setCreators(
+          creators.map((c: any) => {
+            const creatorData: any = {
+              creatorType: c.creatorType || "author",
+            };
+            if (c.name) {
+              // Organization / single-field name
+              creatorData.name = c.name;
+            } else {
+              creatorData.firstName = c.firstName || "";
+              creatorData.lastName = c.lastName || "";
+            }
+            return creatorData;
+          }),
+        );
 
         creatorsUpdated = true;
         afterCreators = creators;
@@ -2413,9 +1615,14 @@ export class StreamableMCPServer {
 
       const notifierQueue = createNotifierQueue();
       await item.saveTx(notifierSaveOptions(notifierQueue));
-      const notification = await commitNotifierQueue(notifierQueue, `update metadata on ${itemKey}`);
+      const notification = await commitNotifierQueue(
+        notifierQueue,
+        `update metadata on ${itemKey}`,
+      );
 
-      ztoolkit.log(`[StreamableMCP] Updated metadata on ${itemKey}: fields=[${Object.keys(updatedFields).join(', ')}], creators=${creatorsUpdated}`);
+      ztoolkit.log(
+        `[StreamableMCP] Updated metadata on ${itemKey}: fields=[${Object.keys(updatedFields).join(", ")}], creators=${creatorsUpdated}`,
+      );
 
       return {
         success: true,
@@ -2423,19 +1630,19 @@ export class StreamableMCPServer {
           itemKey,
           updatedFields,
           creatorsUpdated,
-          ...(creatorsUpdated ? { beforeCreators, afterCreators } : {})
+          ...(creatorsUpdated ? { beforeCreators, afterCreators } : {}),
         },
         metadata: {
           extractedAt: new Date().toISOString(),
           notificationStatus: notification.status,
-          message: `Metadata updated on item ${itemKey}`
-        }
+          message: `Metadata updated on item ${itemKey}`,
+        },
       };
     } catch (error) {
-      ztoolkit.log(`[StreamableMCP] Write metadata error: ${error}`, 'error');
+      ztoolkit.log(`[StreamableMCP] Write metadata error: ${error}`, "error");
       return {
         success: false,
-        error: String(error)
+        error: String(error),
       };
     }
   }
@@ -2444,13 +1651,27 @@ export class StreamableMCPServer {
    * Handle write_item tool calls: create items, reparent attachments, and import files
    */
   private async callWriteItem(args: any): Promise<any> {
-    const { action, itemType, fields, creators, tags, attachmentKeys, parentKey, filePath, parentItemKey, title, libraryID = Zotero.Libraries.userLibraryID } = args;
+    const {
+      action,
+      itemType,
+      fields,
+      creators,
+      tags,
+      attachmentKeys,
+      parentKey,
+      filePath,
+      parentItemKey,
+      title,
+      libraryID = Zotero.Libraries.userLibraryID,
+    } = args;
 
     try {
       switch (action) {
-        case 'create': {
+        case "create": {
           if (!itemType) {
-            throw new Error('itemType is required for create action (e.g., journalArticle, book, conferencePaper)');
+            throw new Error(
+              "itemType is required for create action (e.g., journalArticle, book, conferencePaper)",
+            );
           }
 
           // Create new item
@@ -2458,28 +1679,34 @@ export class StreamableMCPServer {
           item.libraryID = libraryID;
 
           // Set fields
-          if (fields && typeof fields === 'object') {
+          if (fields && typeof fields === "object") {
             for (const [fieldName, value] of Object.entries(fields)) {
               try {
                 item.setField(fieldName, String(value));
               } catch (fieldError) {
-                throw new Error(`Failed to set field "${fieldName}": ${fieldError}`);
+                throw new Error(
+                  `Failed to set field "${fieldName}": ${fieldError}`,
+                );
               }
             }
           }
 
           // Set creators
           if (creators && Array.isArray(creators)) {
-            item.setCreators(creators.map((c: any) => {
-              const creatorData: any = { creatorType: c.creatorType || 'author' };
-              if (c.name) {
-                creatorData.name = c.name;
-              } else {
-                creatorData.firstName = c.firstName || '';
-                creatorData.lastName = c.lastName || '';
-              }
-              return creatorData;
-            }));
+            item.setCreators(
+              creators.map((c: any) => {
+                const creatorData: any = {
+                  creatorType: c.creatorType || "author",
+                };
+                if (c.name) {
+                  creatorData.name = c.name;
+                } else {
+                  creatorData.firstName = c.firstName || "";
+                  creatorData.lastName = c.lastName || "";
+                }
+                return creatorData;
+              }),
+            );
           }
 
           // Add tags
@@ -2495,127 +1722,162 @@ export class StreamableMCPServer {
           let writeError: unknown;
 
           try {
-            await item.saveTx(notifierSaveOptions(notifierQueue));
-            ztoolkit.log(`[StreamableMCP] Created item ${item.key} (type: ${itemType})`);
-
-            // Re-parent attachments if provided
-            if (attachmentKeys && Array.isArray(attachmentKeys)) {
-              for (const attKey of attachmentKeys) {
+            // 创建 parent 与全部附件挂接在一个原生事务内完成。
+            await Zotero.DB.executeTransaction(async () => {
+              const attachments = [];
+              const collectionIDs = new Set<number>();
+              for (const attKey of attachmentKeys || []) {
                 const attachment = await Zotero.Items.getByLibraryAndKeyAsync(
-                  libraryID, attKey
+                  libraryID,
+                  attKey,
                 );
-                if (!attachment) {
-                  ztoolkit.log(`[StreamableMCP] Attachment not found in library ${libraryID}: ${attKey}`, 'warn');
-                  continue;
+                if (
+                  !attachment ||
+                  !attachment.isAttachment() ||
+                  attachment.parentKey ||
+                  attachment.deleted
+                ) {
+                  throw new PlusError(
+                    "STATE_CHANGED",
+                    "独立附件已发生变化，整组创建将回滚",
+                  );
                 }
-                if (!attachment.isAttachment()) {
-                  ztoolkit.log(`[StreamableMCP] Item ${attKey} is not an attachment (type: ${attachment.itemType}), skipping`, 'warn');
-                  continue;
-                }
-                attachment.parentKey = item.key;
-                await attachment.saveTx(notifierSaveOptions(notifierQueue));
-                reparentedAttachments.push(attKey);
-                ztoolkit.log(`[StreamableMCP] Re-parented attachment ${attKey} under ${item.key}`);
+                attachments.push(attachment);
+                for (const id of attachment.getCollections())
+                  collectionIDs.add(id);
               }
-            }
+              item.setCollections([...collectionIDs]);
+              await item.save(notifierSaveOptions(notifierQueue));
+              for (const attachment of attachments) {
+                attachment.setCollections([]);
+                attachment.parentKey = item.key;
+                await attachment.save(notifierSaveOptions(notifierQueue));
+                reparentedAttachments.push(attachment.key);
+              }
+            });
           } catch (error) {
             writeFailed = true;
             writeError = error;
           }
 
-          const notification = await commitNotifierQueue(notifierQueue, `create item ${item.key}`);
           if (writeFailed) throw writeError;
+          const notification = await commitNotifierQueue(
+            notifierQueue,
+            `create item ${item.key}`,
+          );
 
           return {
-            action: 'create',
+            action: "create",
             success: true,
             data: {
               itemKey: item.key,
               itemType,
-              title: fields?.title || '',
+              title: fields?.title || "",
               creatorsCount: creators?.length || 0,
               tagsCount: tags?.length || 0,
               reparentedAttachments,
-              dateCreated: item.dateAdded
+              dateCreated: item.dateAdded,
             },
             metadata: {
               extractedAt: new Date().toISOString(),
               notificationStatus: notification.status,
-              message: `Item created (key: ${item.key}, type: ${itemType})${reparentedAttachments.length > 0 ? `, ${reparentedAttachments.length} attachment(s) attached` : ''}`
-            }
+              message: `Item created (key: ${item.key}, type: ${itemType})${reparentedAttachments.length > 0 ? `, ${reparentedAttachments.length} attachment(s) attached` : ""}`,
+            },
           };
         }
 
-        case 'reparent': {
-          if (!attachmentKeys || !Array.isArray(attachmentKeys) || attachmentKeys.length === 0) {
-            throw new Error('attachmentKeys is required for reparent action');
+        case "reparent": {
+          if (
+            !attachmentKeys ||
+            !Array.isArray(attachmentKeys) ||
+            attachmentKeys.length === 0
+          ) {
+            throw new Error("attachmentKeys is required for reparent action");
           }
           if (!parentKey) {
-            throw new Error('parentKey is required for reparent action');
+            throw new Error("parentKey is required for reparent action");
           }
 
           // Verify parent exists
           const parentItem = await Zotero.Items.getByLibraryAndKeyAsync(
-            libraryID, parentKey
+            libraryID,
+            parentKey,
           );
           if (!parentItem) {
-            throw new Error(`Parent item not found in library ${libraryID}: ${parentKey}`);
+            throw new Error(
+              `Parent item not found in library ${libraryID}: ${parentKey}`,
+            );
           }
           if (!parentItem.isRegularItem()) {
-            throw new Error(`Parent ${parentKey} is not a regular item (type: ${parentItem.itemType})`);
+            throw new Error(
+              `Parent ${parentKey} is not a regular item (type: ${parentItem.itemType})`,
+            );
           }
 
-          const results: Array<{ key: string; success: boolean; error?: string }> = [];
+          const results: Array<{
+            key: string;
+            success: boolean;
+            error?: string;
+          }> = [];
           const notifierQueue = createNotifierQueue();
-          for (const attKey of attachmentKeys) {
-            try {
+          await Zotero.DB.executeTransaction(async () => {
+            for (const attKey of attachmentKeys) {
               const attachment = await Zotero.Items.getByLibraryAndKeyAsync(
-                libraryID, attKey
+                libraryID,
+                attKey,
               );
-              if (!attachment) {
-                results.push({ key: attKey, success: false, error: `Not found in library ${libraryID}` });
-                continue;
+              if (
+                !attachment ||
+                attachment.deleted ||
+                (!attachment.isAttachment() && !attachment.isNote())
+              ) {
+                throw new PlusError(
+                  "STATE_CHANGED",
+                  "待移动子项已改变，整组移动将回滚",
+                );
               }
-              if (!attachment.isAttachment() && !attachment.isNote()) {
-                results.push({ key: attKey, success: false, error: `Not an attachment or note (type: ${attachment.itemType})` });
-                continue;
-              }
+              for (const id of attachment.getCollections())
+                parentItem.addToCollection(id);
+              attachment.setCollections([]);
               attachment.parentKey = parentKey;
-              await attachment.saveTx(notifierSaveOptions(notifierQueue));
+              await attachment.save(notifierSaveOptions(notifierQueue));
               results.push({ key: attKey, success: true });
-              ztoolkit.log(`[StreamableMCP] Re-parented ${attKey} under ${parentKey}`);
-            } catch (attError) {
-              results.push({ key: attKey, success: false, error: String(attError) });
             }
-          }
+            await parentItem.save(notifierSaveOptions(notifierQueue));
+          });
 
-          const notification = await commitNotifierQueue(notifierQueue, `reparent items under ${parentKey}`);
-          const successCount = results.filter(r => r.success).length;
+          const notification = await commitNotifierQueue(
+            notifierQueue,
+            `reparent items under ${parentKey}`,
+          );
+          const successCount = results.filter((r) => r.success).length;
 
           return {
-            action: 'reparent',
+            action: "reparent",
             success: successCount > 0,
             data: {
               parentKey,
               results,
               successCount,
-              totalCount: attachmentKeys.length
+              totalCount: attachmentKeys.length,
             },
             metadata: {
               extractedAt: new Date().toISOString(),
               notificationStatus: notification.status,
-              message: `Re-parented ${successCount}/${attachmentKeys.length} item(s) under ${parentKey}`
-            }
+              message: `Re-parented ${successCount}/${attachmentKeys.length} item(s) under ${parentKey}`,
+            },
           };
         }
 
-        case 'import': {
-          if (!filePath || typeof filePath !== 'string') {
-            throw new Error('filePath is required for import action (absolute path to the file)');
+        case "import": {
+          if (!filePath || typeof filePath !== "string") {
+            throw new Error(
+              "filePath is required for import action (absolute path to the file)",
+            );
           }
           const importParentKey = parentItemKey || parentKey;
           if (!importParentKey) {
-            throw new Error('parentItemKey is required for import action');
+            throw new Error("parentItemKey is required for import action");
           }
           if (!(await IOUtils.exists(filePath))) {
             throw new Error(`File not found: ${filePath}`);
@@ -2623,13 +1885,18 @@ export class StreamableMCPServer {
 
           // Verify parent exists
           const parentItem = await Zotero.Items.getByLibraryAndKeyAsync(
-            libraryID, importParentKey
+            libraryID,
+            importParentKey,
           );
           if (!parentItem) {
-            throw new Error(`Parent item not found in library ${libraryID}: ${importParentKey}`);
+            throw new Error(
+              `Parent item not found in library ${libraryID}: ${importParentKey}`,
+            );
           }
           if (!parentItem.isRegularItem()) {
-            throw new Error(`Parent ${importParentKey} is not a regular item (type: ${parentItem.itemType}), cannot attach files`);
+            throw new Error(
+              `Parent ${importParentKey} is not a regular item (type: ${parentItem.itemType}), cannot attach files`,
+            );
           }
 
           // Import file as attachment
@@ -2637,38 +1904,45 @@ export class StreamableMCPServer {
           const attachment = await Zotero.Attachments.importFromFile({
             file: filePath,
             parentItemID: parentItem.id,
-            title: title || filePath.split(/[\\/]/).pop() || 'Imported Attachment',
-            saveOptions: notifierSaveOptions(notifierQueue)
+            title:
+              title || filePath.split(/[\\/]/).pop() || "Imported Attachment",
+            saveOptions: notifierSaveOptions(notifierQueue),
           });
-          const notification = await commitNotifierQueue(notifierQueue, `import attachment ${attachment.key}`);
+          const notification = await commitNotifierQueue(
+            notifierQueue,
+            `import attachment ${attachment.key}`,
+          );
 
-          ztoolkit.log(`[StreamableMCP] Imported file as attachment ${attachment.key} under ${importParentKey}`);
+          ztoolkit.log(
+            `[StreamableMCP] Imported file as attachment ${attachment.key} under ${importParentKey}`,
+          );
 
           return {
-            action: 'import',
+            action: "import",
             success: true,
             data: {
               attachmentKey: attachment.key,
               parentItemKey: importParentKey,
-              filePath,
-              title: attachment.getField('title')
+              title: attachment.getField("title"),
             },
             metadata: {
               extractedAt: new Date().toISOString(),
               notificationStatus: notification.status,
-              message: `File imported as attachment (key: ${attachment.key}) under parent ${importParentKey}`
-            }
+              message: `File imported as attachment (key: ${attachment.key}) under parent ${importParentKey}`,
+            },
           };
         }
 
         default:
-          throw new Error(`Unknown action: ${action}. Use create, reparent, or import.`);
+          throw new Error(
+            `Unknown action: ${action}. Use create, reparent, or import.`,
+          );
       }
     } catch (error) {
-      ztoolkit.log(`[StreamableMCP] Write item error: ${error}`, 'error');
+      ztoolkit.log(`[StreamableMCP] Write item error: ${error}`, "error");
       return {
         success: false,
-        error: String(error)
+        error: String(error),
       };
     }
   }
@@ -2677,141 +1951,51 @@ export class StreamableMCPServer {
   // add_by_identifier
   // ---------------------------------------------------------------------
 
-  /** Background jobs for add_by_identifier, keyed by job ID. */
-  private static identifierJobs = new Map<string, any>();
-  private static identifierJobSeq = 0;
-  private static readonly MAX_IDENTIFIERS_PER_CALL = 200;
-  private static readonly MAX_SYNC_IDENTIFIERS = 3;
-
-  /**
-   * Resolve DOI / arXiv / ISBN / PMID / ADS identifiers through Zotero's own
-   * search translators and save the resulting items.
-   *
-   * Mirrors chrome/content/zotero/lookup.js (the "Add Item by Identifier"
-   * button): extractIdentifiers → Zotero.Translate.Search → setIdentifier →
-   * getTranslators → setTranslator → translate(). Item types and metadata are
-   * therefore exactly what Zotero itself produces; nothing is invented here.
-   */
+  // 此入口仅由持久队列逐项调用；旧 jobID 查询由 Plus runtime 处理。
   private async callAddByIdentifier(args: any): Promise<any> {
-    // Polling an existing job
-    if (args?.jobID) {
-      const job = StreamableMCPServer.identifierJobs.get(args.jobID);
-      if (!job) {
-        throw new Error(`Job not found: ${args.jobID}. Jobs are kept only for the current Zotero session.`);
-      }
-      return this.summarizeIdentifierJob(job);
+    const inputs = args.identifiers;
+    if (!Array.isArray(inputs) || inputs.length !== 1) {
+      throw new PlusError(
+        "INVALID_IDENTIFIER_STEP",
+        "执行器一次只处理一个 identifier",
+      );
     }
-
-    const raw = args.identifiers ?? args.identifier;
-    const inputs = (Array.isArray(raw) ? raw : String(raw).split(/[\r\n]+/))
-      .map((s: any) => String(s).trim())
-      .filter((s: string) => s.length > 0);
-
-    if (!inputs.length) {
-      throw new Error('No identifiers provided');
-    }
-    if (inputs.length > StreamableMCPServer.MAX_IDENTIFIERS_PER_CALL) {
-      throw new Error(`Too many identifiers (${inputs.length}). Send at most ${StreamableMCPServer.MAX_IDENTIFIERS_PER_CALL} per call.`);
-    }
-
-    const libraryID = args.libraryID ?? Zotero.Libraries.userLibraryID;
+    const libraryID = args.libraryID;
     let collections: number[] | false = false;
-    let collectionName: string | null = null;
     if (args.collectionKey) {
-      const collection = await Zotero.Collections.getByLibraryAndKeyAsync(libraryID, args.collectionKey);
-      if (!collection) {
-        throw new Error(`Collection not found in library ${libraryID}: ${args.collectionKey}`);
-      }
-      collections = [(collection as any).id];
-      collectionName = (collection as any).name;
+      const collection = await Zotero.Collections.getByLibraryAndKeyAsync(
+        libraryID,
+        args.collectionKey,
+      );
+      if (!collection)
+        throw new PlusError("COLLECTION_NOT_FOUND", "集合不存在");
+      collections = [collection.id];
     }
-
-    const opts = {
+    const result = await this.importOneIdentifier(inputs[0], {
       libraryID,
       collections,
       saveAttachments: args.saveAttachments !== false,
       skipExisting: args.skipExisting !== false,
       fileExisting: args.fileExisting === true,
-      dryRun: args.dryRun === true,
-      titleDuplicates: args.titleDuplicates || 'flag',
-      delayMs: typeof args.delayMs === 'number' ? args.delayMs : 500
-    };
-
-    const job: any = {
-      id: `identifier-job-${++StreamableMCPServer.identifierJobSeq}`,
-      state: 'running',
-      total: inputs.length,
-      done: 0,
-      results: [],
-      startedAt: new Date().toISOString(),
-      finishedAt: null,
-      target: { libraryID, collectionKey: args.collectionKey || null, collectionName }
-    };
-    StreamableMCPServer.identifierJobs.set(job.id, job);
-    this.pruneIdentifierJobs();
-
-    const run = this.runIdentifierJob(job, inputs, opts);
-
-    // Long batches would blow past the MCP keep-alive window, so anything
-    // bigger than a couple of lookups is handed back as a pollable job.
-    const runAsync = args.async === true
-      || (!opts.dryRun && inputs.length > StreamableMCPServer.MAX_SYNC_IDENTIFIERS);
-
-    if (!runAsync) {
-      await run;
-      return this.summarizeIdentifierJob(job);
-    }
-
-    return {
-      success: true,
-      data: {
-        jobID: job.id,
-        state: job.state,
-        total: job.total,
-        target: job.target
-      },
-      metadata: {
-        extractedAt: new Date().toISOString(),
-        message: `Started background import of ${job.total} identifier(s). Poll with add_by_identifier {"jobID": "${job.id}"}.`
-      }
-    };
-  }
-
-  private async runIdentifierJob(job: any, inputs: string[], opts: any): Promise<void> {
-    try {
-      for (const input of inputs) {
-        try {
-          job.results.push(await this.importOneIdentifier(input, opts));
-        } catch (error) {
-          ztoolkit.log(`[StreamableMCP] add_by_identifier failed for "${input}": ${error}`, 'error');
-          job.results.push({ input, status: 'error', error: String(error) });
-        }
-        job.done++;
-        if (opts.delayMs > 0 && job.done < job.total) {
-          await new Promise(resolve => setTimeout(resolve, opts.delayMs));
-        }
-      }
-      job.state = 'done';
-    } catch (error) {
-      job.state = 'error';
-      job.error = String(error);
-    } finally {
-      job.finishedAt = new Date().toISOString();
-    }
+      dryRun: false,
+      titleDuplicates: args.titleDuplicates || "flag",
+      expectedExistingKey: args.expectedExistingKey,
+    });
+    return { success: result.status !== "error", data: result };
   }
 
   private async importOneIdentifier(input: string, opts: any): Promise<any> {
     const identifiers = (Zotero.Utilities as any).extractIdentifiers(input);
     if (!identifiers.length) {
-      return { input, status: 'error', error: 'NO_IDENTIFIER_FOUND' };
+      return { input, status: "error", error: "NO_IDENTIFIER_FOUND" };
     }
     if (identifiers.length > 1) {
       // One entry should mean one item; anything else is ambiguous input.
       return {
         input,
-        status: 'error',
-        error: 'AMBIGUOUS_INPUT',
-        parsed: identifiers.map((id: any) => this.describeIdentifier(id))
+        status: "error",
+        error: "AMBIGUOUS_INPUT",
+        parsed: identifiers.map((id: any) => this.describeIdentifier(id)),
       };
     }
 
@@ -2819,18 +2003,29 @@ export class StreamableMCPServer {
     const parsed = this.describeIdentifier(identifier);
 
     if (opts.dryRun) {
-      return { input, status: 'parsed', identifier: parsed };
+      return { input, status: "parsed", identifier: parsed };
     }
 
     if (opts.skipExisting) {
-      const existing = await this.findItemByIdentifier(opts.libraryID, identifier);
+      const existing = await this.findItemByIdentifier(
+        opts.libraryID,
+        identifier,
+      );
+      if ((existing?.key || null) !== opts.expectedExistingKey) {
+        throw new PlusError(
+          "STATE_CHANGED",
+          "identifier 的现有匹配已改变，必须重新预览",
+        );
+      }
       if (existing) {
         let addedToCollection = false;
         // The only path in this tool that touches an item already in the
         // library, so it has to be asked for explicitly.
         if (opts.fileExisting && opts.collections) {
           const current = existing.getCollections();
-          const missing = opts.collections.filter((cid: number) => !current.includes(cid));
+          const missing = opts.collections.filter(
+            (cid: number) => !current.includes(cid),
+          );
           if (missing.length) {
             for (const cid of missing) {
               existing.addToCollection(cid);
@@ -2842,9 +2037,9 @@ export class StreamableMCPServer {
         return {
           input,
           identifier: parsed,
-          status: 'exists',
+          status: "exists",
           addedToCollection,
-          item: this.summarizeIdentifierItem(existing)
+          item: this.summarizeIdentifierItem(existing),
         };
       }
     }
@@ -2854,51 +2049,63 @@ export class StreamableMCPServer {
     // Be lenient about translators, exactly like lookup.js
     const translators = await translate.getTranslators();
     if (!translators || !translators.length) {
-      return { input, identifier: parsed, status: 'error', error: 'NO_TRANSLATOR' };
+      return {
+        input,
+        identifier: parsed,
+        status: "error",
+        error: "NO_TRANSLATOR",
+      };
     }
     translate.setTranslator(translators);
 
     const newItems = await translate.translate({
       libraryID: opts.libraryID,
       collections: opts.collections,
-      saveAttachments: opts.saveAttachments
+      saveAttachments: opts.saveAttachments,
     });
 
     if (!newItems || !newItems.length) {
-      return { input, identifier: parsed, status: 'error', error: 'NO_ITEM_RETURNED' };
+      return {
+        input,
+        identifier: parsed,
+        status: "error",
+        error: "NO_ITEM_RETURNED",
+      };
     }
 
-    ztoolkit.log(`[StreamableMCP] add_by_identifier imported ${newItems[0].key} for ${parsed}`);
+    ztoolkit.log("[StreamableMCP] identifier 导入已返回结果");
 
     // A preprint and its published version share no identifier, so the check
     // above cannot see them as the same work. The title is only known after
     // resolution, hence this second pass.
     let duplicatesOf: any[] = [];
-    if (opts.titleDuplicates !== 'off') {
+    if (opts.titleDuplicates !== "off") {
       duplicatesOf = await this.findItemsByTitle(opts.libraryID, newItems[0]);
     }
 
-    if (duplicatesOf.length && opts.titleDuplicates === 'skip') {
+    if (duplicatesOf.length && opts.titleDuplicates === "skip") {
       const imported = newItems[0];
       imported.deleted = true; // to the trash, not erased
       await imported.saveTx();
       return {
         input,
         identifier: parsed,
-        status: 'duplicate_trashed',
+        status: "duplicate_trashed",
         trashedItemKey: imported.key,
         duplicateOf: duplicatesOf,
-        item: this.summarizeIdentifierItem(imported)
+        item: this.summarizeIdentifierItem(imported),
       };
     }
 
     return {
       input,
       identifier: parsed,
-      status: 'imported',
+      status: "imported",
       item: this.summarizeIdentifierItem(newItems[0]),
       ...(duplicatesOf.length ? { possibleDuplicateOf: duplicatesOf } : {}),
-      extraItems: newItems.slice(1).map((i: any) => this.summarizeIdentifierItem(i))
+      extraItems: newItems
+        .slice(1)
+        .map((i: any) => this.summarizeIdentifierItem(i)),
     };
   }
 
@@ -2908,35 +2115,41 @@ export class StreamableMCPServer {
    * "preprint vs published version" is worth it, guessing is not.
    */
   private async findItemsByTitle(libraryID: number, item: any): Promise<any[]> {
-    const normalize = (value: string) => String(value || '')
-      .toLowerCase()
-      .replace(/[^a-z0-9一-鿿]+/g, ' ')
-      .trim();
+    const normalize = (value: string) =>
+      String(value || "")
+        .toLowerCase()
+        .replace(/[^a-z0-9一-鿿]+/g, " ")
+        .trim();
 
-    const title = item.getField('title');
+    const title = item.getField("title");
     const target = normalize(title);
     if (target.length < 8) return [];
 
     // Cheap candidate filter, then compare normalized titles in full: a
     // 'contains' search cannot survive punctuation differences on its own.
-    const tokens = target.split(' ').filter((t: string) => t.length >= 5);
-    const probe = tokens.sort((a: string, b: string) => b.length - a.length)[0] || target.slice(0, 20);
+    const tokens = target.split(" ").filter((t: string) => t.length >= 5);
+    const probe =
+      tokens.sort((a: string, b: string) => b.length - a.length)[0] ||
+      target.slice(0, 20);
 
     try {
       const search = new Zotero.Search();
       (search as any).libraryID = libraryID;
-      search.addCondition('noChildren', 'true');
-      search.addCondition('title', 'contains', probe);
+      search.addCondition("noChildren", "true");
+      search.addCondition("title", "contains", probe);
       const ids = await search.search();
       if (!ids || !ids.length) return [];
 
       const candidates = await Zotero.Items.getAsync(ids);
       return candidates
         .filter((c: any) => c.id !== item.id && c.isRegularItem() && !c.deleted)
-        .filter((c: any) => normalize(c.getField('title')) === target)
+        .filter((c: any) => normalize(c.getField("title")) === target)
         .map((c: any) => this.summarizeIdentifierItem(c));
     } catch (error) {
-      ztoolkit.log(`[StreamableMCP] add_by_identifier title duplicate check failed: ${error}`, 'warn');
+      ztoolkit.log(
+        `[StreamableMCP] add_by_identifier title duplicate check failed: ${error}`,
+        "warn",
+      );
       return [];
     }
   }
@@ -2945,44 +2158,19 @@ export class StreamableMCPServer {
    * Look for an item already in the library carrying this identifier, so that
    * repeated calls do not pile up duplicates.
    */
-  private async findItemByIdentifier(libraryID: number, identifier: any): Promise<any> {
-    const conditions: Array<[string, string, string]> = [];
-    if (identifier.DOI) conditions.push(['DOI', 'is', identifier.DOI]);
-    if (identifier.ISBN) conditions.push(['ISBN', 'is', identifier.ISBN]);
-    if (identifier.arXiv) {
-      conditions.push(['extra', 'contains', `arXiv:${identifier.arXiv}`]);
-      conditions.push(['url', 'contains', `arxiv.org/abs/${identifier.arXiv}`]);
-    }
-    if (identifier.PMID && !Array.isArray(identifier.PMID)) {
-      conditions.push(['extra', 'contains', `PMID: ${identifier.PMID}`]);
-    }
-    if (identifier.adsBibcode) conditions.push(['extra', 'contains', identifier.adsBibcode]);
-
-    for (const [field, operator, value] of conditions) {
-      try {
-        const search = new Zotero.Search();
-        // Settable at runtime; zotero-types marks it read-only.
-        (search as any).libraryID = libraryID;
-        search.addCondition('noChildren', 'true');
-        search.addCondition(field as any, operator as any, value);
-        const ids = await search.search();
-        if (ids && ids.length) {
-          const items = await Zotero.Items.getAsync(ids);
-          const item = items.find((i: any) => i.isRegularItem());
-          if (item) return item;
-        }
-      } catch (error) {
-        ztoolkit.log(`[StreamableMCP] add_by_identifier duplicate check failed on ${field}: ${error}`, 'warn');
-      }
-    }
-    return null;
+  private async findItemByIdentifier(
+    libraryID: number,
+    identifier: any,
+  ): Promise<any> {
+    return lookupIdentifier(libraryID, identifier);
   }
 
   private describeIdentifier(identifier: any): string {
-    if (!identifier) return '';
-    for (const key of ['DOI', 'arXiv', 'ISBN', 'PMID', 'adsBibcode']) {
+    if (!identifier) return "";
+    for (const key of ["DOI", "arXiv", "ISBN", "PMID", "adsBibcode"]) {
       const value = identifier[key];
-      if (value) return `${key}:${Array.isArray(value) ? value.join(',') : value}`;
+      if (value)
+        return `${key}:${Array.isArray(value) ? value.join(",") : value}`;
     }
     return JSON.stringify(identifier);
   }
@@ -2991,13 +2179,18 @@ export class StreamableMCPServer {
     const summary: any = {
       itemKey: item.key,
       itemType: Zotero.ItemTypes.getName(item.itemTypeID),
-      title: item.getField('title'),
-      date: item.getField('date'),
-      DOI: item.getField('DOI') || '',
-      url: item.getField('url') || '',
-      extra: item.getField('extra') || ''
+      title: item.getField("title"),
+      date: item.getField("date"),
+      DOI: item.getField("DOI") || "",
+      url: item.getField("url") || "",
+      extra: item.getField("extra") || "",
     };
-    for (const field of ['publicationTitle', 'proceedingsTitle', 'repository', 'publisher']) {
+    for (const field of [
+      "publicationTitle",
+      "proceedingsTitle",
+      "repository",
+      "publisher",
+    ]) {
       try {
         const value = item.getField(field);
         if (value) {
@@ -3011,103 +2204,61 @@ export class StreamableMCPServer {
     return summary;
   }
 
-  private summarizeIdentifierJob(job: any): any {
-    const counts: Record<string, number> = {};
-    const itemTypes: Record<string, number> = {};
-    for (const row of job.results) {
-      counts[row.status] = (counts[row.status] || 0) + 1;
-      if (row.item?.itemType) {
-        itemTypes[row.item.itemType] = (itemTypes[row.item.itemType] || 0) + 1;
-      }
-    }
-    return {
-      success: job.state !== 'error',
-      data: {
-        jobID: job.id,
-        state: job.state,
-        total: job.total,
-        done: job.done,
-        counts,
-        itemTypes,
-        target: job.target,
-        results: job.results
-      },
-      metadata: {
-        extractedAt: new Date().toISOString(),
-        startedAt: job.startedAt,
-        finishedAt: job.finishedAt,
-        message: job.state === 'running'
-          ? `Import in progress: ${job.done}/${job.total}. Poll again with jobID ${job.id}.`
-          : `Import ${job.state}: ${job.done}/${job.total} processed.`
-      }
-    };
-  }
-
-  /** Keep at most 20 finished jobs around. */
-  private pruneIdentifierJobs(): void {
-    const finished = Array.from(StreamableMCPServer.identifierJobs.values())
-      .filter((job: any) => job.state !== 'running');
-    if (finished.length <= 20) return;
-    for (const job of finished.slice(0, finished.length - 20)) {
-      StreamableMCPServer.identifierJobs.delete(job.id);
-    }
-  }
-
   /**
    * Format tool result for MCP response with intelligent content type detection
    */
   private formatToolResult(result: any, toolName: string, args: any): any {
     // Check if client explicitly requested text format
-    const requestedTextFormat = args?.format === 'text';
-    
+    const requestedTextFormat = args?.format === "text";
+
     // If result is already a string (text format), wrap it in MCP content format
-    if (typeof result === 'string') {
+    if (typeof result === "string") {
       return {
         content: [
           {
-            type: 'text',
+            type: "text",
             text: result,
           },
         ],
         isError: false,
       };
     }
-    
+
     // For structured data, provide both JSON and formatted options
-    if (typeof result === 'object' && result !== null) {
+    if (typeof result === "object" && result !== null) {
       // If explicitly requested text format, convert to readable text
       if (requestedTextFormat) {
         return {
           content: [
             {
-              type: 'text',
+              type: "text",
               text: this.formatObjectAsText(result, toolName),
             },
           ],
           isError: false,
         };
       }
-      
+
       // Default: provide structured JSON with formatted preview
       return {
         content: [
           {
-            type: 'text',
+            type: "text",
             text: JSON.stringify(result, null, 2),
           },
         ],
         isError: false,
         // Include raw structured data for programmatic access
         _structuredData: result,
-        _contentType: 'application/json'
+        _contentType: "application/json",
       };
     }
-    
+
     // Fallback for other types
     return {
       content: [
         {
-          type: 'text',
+          type: "text",
           text: String(result),
         },
       ],
@@ -3120,11 +2271,11 @@ export class StreamableMCPServer {
    */
   private formatObjectAsText(obj: any, toolName: string): string {
     switch (toolName) {
-      case 'get_content':
+      case "get_content":
         return this.formatContentAsText(obj);
-      case 'search_library':
+      case "search_library":
         return this.formatSearchResultsAsText(obj);
-      case 'get_annotations':
+      case "get_annotations":
         return this.formatAnnotationsAsText(obj);
       default:
         return JSON.stringify(obj, null, 2);
@@ -3133,43 +2284,47 @@ export class StreamableMCPServer {
 
   private formatContentAsText(contentResult: any): string {
     const parts = [];
-    
+
     if (contentResult.title) {
       parts.push(`TITLE: ${contentResult.title}\n`);
     }
-    
+
     if (contentResult.content) {
       if (contentResult.content.abstract) {
         parts.push(`ABSTRACT:\n${contentResult.content.abstract.content}\n`);
       }
-      
+
       if (contentResult.content.attachments) {
         for (const att of contentResult.content.attachments) {
-          parts.push(`ATTACHMENT (${att.filename || att.type}):\n${att.content}\n`);
+          parts.push(
+            `ATTACHMENT (${att.filename || att.type}):\n${att.content}\n`,
+          );
         }
       }
-      
+
       if (contentResult.content.notes) {
         for (const note of contentResult.content.notes) {
           parts.push(`NOTE (${note.title}):\n${note.content}\n`);
         }
       }
     }
-    
-    return parts.join('\n---\n\n');
+
+    return parts.join("\n---\n\n");
   }
 
   private formatSearchResultsAsText(searchResult: any): string {
     if (!searchResult.results || !Array.isArray(searchResult.results)) {
       return JSON.stringify(searchResult, null, 2);
     }
-    
+
     const parts = [`SEARCH RESULTS (${searchResult.results.length} items):\n`];
-    
+
     searchResult.results.forEach((item: any, index: number) => {
-      parts.push(`${index + 1}. ${item.title || 'Untitled'}`);
+      parts.push(`${index + 1}. ${item.title || "Untitled"}`);
       if (item.creators && item.creators.length > 0) {
-        parts.push(`   Authors: ${item.creators.map((c: any) => c.name || `${c.firstName} ${c.lastName}`).join(', ')}`);
+        parts.push(
+          `   Authors: ${item.creators.map((c: any) => c.name || `${c.firstName} ${c.lastName}`).join(", ")}`,
+        );
       }
       if (item.date) {
         parts.push(`   Date: ${item.date}`);
@@ -3177,19 +2332,19 @@ export class StreamableMCPServer {
       if (item.itemKey) {
         parts.push(`   Key: ${item.itemKey}`);
       }
-      parts.push('');
+      parts.push("");
     });
-    
-    return parts.join('\n');
+
+    return parts.join("\n");
   }
 
   private formatAnnotationsAsText(annotationResult: any): string {
     if (!annotationResult.data || !Array.isArray(annotationResult.data)) {
       return JSON.stringify(annotationResult, null, 2);
     }
-    
+
     const parts = [`ANNOTATIONS (${annotationResult.data.length} items):\n`];
-    
+
     annotationResult.data.forEach((ann: any, index: number) => {
       parts.push(`${index + 1}. [${ann.type.toUpperCase()}] ${ann.content}`);
       if (ann.page) {
@@ -3198,30 +2353,39 @@ export class StreamableMCPServer {
       if (ann.dateModified) {
         parts.push(`   Modified: ${ann.dateModified}`);
       }
-      parts.push('');
+      parts.push("");
     });
-    
-    return parts.join('\n');
+
+    return parts.join("\n");
   }
 
   private createResponse(id: string | number | null, result: any): MCPResponse {
     return {
-      jsonrpc: '2.0',
+      jsonrpc: "2.0",
       id,
       result,
     };
   }
 
-  private createError(id: string | number | null, code: number, message: string, data?: any): MCPResponse {
+  private createError(
+    id: string | number | null,
+    code: number,
+    message: string,
+    data?: any,
+  ): MCPResponse {
     return {
-      jsonrpc: '2.0',
+      jsonrpc: "2.0",
       id,
       error: { code, message, data },
     };
   }
 
   private isNotificationRequest(request: MCPRequest): boolean {
-    return !Object.prototype.hasOwnProperty.call(request, 'id') || request.id === null || request.id === undefined;
+    return (
+      !Object.prototype.hasOwnProperty.call(request, "id") ||
+      request.id === null ||
+      request.id === undefined
+    );
   }
 
   /**
@@ -3231,49 +2395,24 @@ export class StreamableMCPServer {
     return {
       isInitialized: this.isInitialized,
       serverInfo: this.serverInfo,
-      protocolVersion: '2024-11-05',
+      protocolVersion: PLUS_PROTOCOL_VERSION,
       supportedMethods: [
-        'initialize',
-        'initialized', 
-        'notifications/initialized',
-        'tools/list',
-        'tools/call',
-        'resources/list',
-        'prompts/list',
-        'ping'
+        "initialize",
+        "initialized",
+        "notifications/initialized",
+        "tools/list",
+        "tools/call",
+        "resources/list",
+        "prompts/list",
+        "ping",
       ],
-      availableTools: [
-        'get_libraries',
-        'search_libraries',
-        'search_library',
-        'search_annotations',
-        'get_item_details',
-        'get_annotations',
-        'get_content',
-        'get_collections',
-        'search_collections',
-        'get_collection_details',
-        'get_collection_items',
-        'search_fulltext',
-        'get_item_abstract',
-        // Semantic Search Tools (read-only)
-        'semantic_search',
-        'find_similar',
-        'semantic_status',
-        // Full-text Database Tool (read-only)
-        'fulltext_database',
-        // Write Tools
-        'write_note',
-        'write_tag',
-        'write_metadata',
-        'write_item',
-        'add_by_identifier'
-      ],
+      availableTools: this.listTools().map((tool) => tool.name),
       transport: {
         type: "streamable-http",
         keepAliveSupported: false,
-        maxConnections: 100
-      }
+        stateless: true,
+        notificationsSupported: false,
+      },
     };
   }
 
@@ -3282,25 +2421,27 @@ export class StreamableMCPServer {
    */
   private getFulltextModeConfiguration(mode: string): any {
     const modeConfigs = {
-      'minimal': {
+      minimal: {
         contextLength: 100,
-        maxResults: 20
+        maxResults: 20,
       },
-      'preview': {
+      preview: {
         contextLength: 200,
-        maxResults: 50  
+        maxResults: 50,
       },
-      'standard': {
+      standard: {
         contextLength: 250,
-        maxResults: 100
+        maxResults: 100,
       },
-      'complete': {
+      complete: {
         contextLength: 400,
-        maxResults: 200
-      }
+        maxResults: 200,
+      },
     };
 
-    return modeConfigs[mode as keyof typeof modeConfigs] || modeConfigs['standard'];
+    return (
+      modeConfigs[mode as keyof typeof modeConfigs] || modeConfigs["standard"]
+    );
   }
 
   /**
@@ -3308,21 +2449,23 @@ export class StreamableMCPServer {
    */
   private getSearchModeConfiguration(mode: string): any {
     const modeConfigs = {
-      'minimal': {
-        limit: 30
+      minimal: {
+        limit: 30,
       },
-      'preview': {
-        limit: 100
+      preview: {
+        limit: 100,
       },
-      'standard': {
-        limit: 200
+      standard: {
+        limit: 200,
       },
-      'complete': {
-        limit: 500
-      }
+      complete: {
+        limit: 500,
+      },
     };
 
-    return modeConfigs[mode as keyof typeof modeConfigs] || modeConfigs['standard'];
+    return (
+      modeConfigs[mode as keyof typeof modeConfigs] || modeConfigs["standard"]
+    );
   }
 
   /**
@@ -3330,21 +2473,23 @@ export class StreamableMCPServer {
    */
   private getCollectionModeConfiguration(mode: string): any {
     const modeConfigs = {
-      'minimal': {
-        limit: 20
+      minimal: {
+        limit: 20,
       },
-      'preview': {
-        limit: 50
+      preview: {
+        limit: 50,
       },
-      'standard': {
-        limit: 100
+      standard: {
+        limit: 100,
       },
-      'complete': {
-        limit: 500
-      }
+      complete: {
+        limit: 500,
+      },
     };
 
-    return modeConfigs[mode as keyof typeof modeConfigs] || modeConfigs['standard'];
+    return (
+      modeConfigs[mode as keyof typeof modeConfigs] || modeConfigs["standard"]
+    );
   }
 
   /**
@@ -3352,20 +2497,32 @@ export class StreamableMCPServer {
    */
   private getItemDetailsModeConfiguration(mode: string): any {
     const modeConfigs = {
-      'minimal': {
-        fields: ['key', 'title', 'creators', 'date', 'itemType']
+      minimal: {
+        fields: ["key", "title", "creators", "date", "itemType"],
       },
-      'preview': {
-        fields: ['key', 'title', 'creators', 'date', 'itemType', 'abstractNote', 'extra', 'tags', 'collections']
+      preview: {
+        fields: [
+          "key",
+          "title",
+          "creators",
+          "date",
+          "itemType",
+          "abstractNote",
+          "extra",
+          "tags",
+          "collections",
+        ],
       },
-      'standard': {
-        fields: null // Include most fields (default behavior)
+      standard: {
+        fields: null, // Include most fields (default behavior)
       },
-      'complete': {
-        fields: null // Include all fields
-      }
+      complete: {
+        fields: null, // Include all fields
+      },
     };
 
-    return modeConfigs[mode as keyof typeof modeConfigs] || modeConfigs['standard'];
+    return (
+      modeConfigs[mode as keyof typeof modeConfigs] || modeConfigs["standard"]
+    );
   }
 }

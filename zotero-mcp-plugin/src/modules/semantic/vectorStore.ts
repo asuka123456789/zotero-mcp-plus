@@ -14,7 +14,7 @@ export interface VectorRecord {
   itemKey: string;
   chunkId: number;
   vector: Float32Array;
-  language: 'zh' | 'en';
+  language: "zh" | "en";
   chunkText: string;
   metadata?: Record<string, any>;
 }
@@ -23,7 +23,7 @@ export interface VectorRecord {
 export interface QuantizedVector {
   int8Data: Int8Array;
   scale: number;
-  norm: number;  // Pre-computed L2 norm for faster cosine similarity
+  norm: number; // Pre-computed L2 norm for faster cosine similarity
 }
 
 export interface SearchResult {
@@ -40,7 +40,7 @@ export interface IndexStatus {
   chunkCount: number;
   contentHash: string;
   version: number;
-  itemModified?: string;       // Item's dateModified for fast change detection
+  itemModified?: string; // Item's dateModified for fast change detection
   attachmentModified?: string; // Latest attachment dateModified
 }
 
@@ -54,20 +54,20 @@ export interface VectorStoreStats {
   cachedContentItems: number;
   cachedContentSizeBytes: number;
   // Extended stats for detailed view
-  storedDimensions?: number;        // Dimensions of stored vectors
+  storedDimensions?: number; // Dimensions of stored vectors
   int8MigrationStatus?: {
     migrated: number;
     total: number;
     percent: number;
   };
-  dbPath?: string;                  // Path to database file
+  dbPath?: string; // Path to database file
 }
 
 // Global instance counter for debugging
 let vectorStoreInstanceCounter = 0;
 
 export class VectorStore {
-  private dbPath: string = '';
+  private dbPath: string = "";
   private db: any = null;
   private initialized: boolean = false;
   private initPromise: Promise<void> | null = null;
@@ -81,7 +81,9 @@ export class VectorStore {
 
   constructor() {
     this.instanceId = ++vectorStoreInstanceCounter;
-    ztoolkit.log(`[VectorStore] Constructor called, instanceId=${this.instanceId}, total instances=${vectorStoreInstanceCounter}`);
+    ztoolkit.log(
+      `[VectorStore] Constructor called, instanceId=${this.instanceId}, total instances=${vectorStoreInstanceCounter}`,
+    );
   }
 
   async initialize(): Promise<void> {
@@ -96,9 +98,11 @@ export class VectorStore {
     try {
       // Get Zotero data directory
       const dataDir = Zotero.DataDirectory.dir;
-      this.dbPath = PathUtils.join(dataDir, 'zotero-mcp-vectors.sqlite');
+      this.dbPath = PathUtils.join(dataDir, "zotero-mcp-plus-vectors.sqlite");
 
-      ztoolkit.log(`[VectorStore] Initializing database: instanceId=${this.instanceId}, dbPath=${this.dbPath}`);
+      ztoolkit.log(
+        `[VectorStore] Initializing database: instanceId=${this.instanceId}, dbPath=${this.dbPath}`,
+      );
 
       // Create database connection
       this.db = new Zotero.DBConnection(this.dbPath);
@@ -111,7 +115,7 @@ export class VectorStore {
         await this.db.queryAsync(`PRAGMA synchronous = NORMAL`);
         ztoolkit.log(`[VectorStore] journal_mode=${mode}`);
       } catch (e) {
-        ztoolkit.log(`[VectorStore] Could not enable WAL: ${e}`, 'warn');
+        ztoolkit.log(`[VectorStore] Could not enable WAL: ${e}`, "warn");
       }
 
       // Create tables
@@ -121,8 +125,12 @@ export class VectorStore {
       // file even with a row limit, so on multi-GB stores run it at most
       // once per week (#95). Corruption between checks is repaired at the
       // next scheduled check.
-      const PREF_LAST_CHECK = 'extensions.zotero.zotero-mcp-plugin.semantic.lastIntegrityCheck';
-      const lastCheck = parseInt(String(Zotero.Prefs.get(PREF_LAST_CHECK, true) || '0'), 10);
+      const PREF_LAST_CHECK =
+        "extensions.zotero.zotero-mcp-plus.semantic.lastIntegrityCheck";
+      const lastCheck = parseInt(
+        String(Zotero.Prefs.get(PREF_LAST_CHECK, true) || "0"),
+        10,
+      );
       if (Date.now() - lastCheck > 7 * 24 * 3600 * 1000) {
         const isHealthy = await this.checkAndRepairDatabase();
         if (!isHealthy) {
@@ -133,9 +141,9 @@ export class VectorStore {
       }
 
       this.initialized = true;
-      ztoolkit.log('[VectorStore] Initialized successfully');
+      ztoolkit.log("[VectorStore] Initialized successfully");
     } catch (error) {
-      ztoolkit.log(`[VectorStore] Initialization failed: ${error}`, 'error');
+      ztoolkit.log(`[VectorStore] Initialization failed: ${error}`, "error");
       throw error;
     }
   }
@@ -149,57 +157,82 @@ export class VectorStore {
     try {
       // Quick integrity check on all tables
       const result = await this.db.valueQueryAsync(`PRAGMA integrity_check(1)`);
-      if (result === 'ok') {
-        ztoolkit.log('[VectorStore] Database integrity check passed');
+      if (result === "ok") {
+        ztoolkit.log("[VectorStore] Database integrity check passed");
         return true;
       }
 
-      ztoolkit.log(`[VectorStore] Database integrity check FAILED: ${result}`, 'warn');
+      ztoolkit.log(
+        `[VectorStore] Database integrity check FAILED: ${result}`,
+        "warn",
+      );
 
       // Step 1: Try REINDEX to fix index corruption (most common cause)
       try {
-        ztoolkit.log('[VectorStore] Attempting repair via REINDEX...');
+        ztoolkit.log("[VectorStore] Attempting repair via REINDEX...");
         await this.db.queryAsync(`REINDEX`);
 
         // Re-check after REINDEX
-        const recheck = await this.db.valueQueryAsync(`PRAGMA integrity_check(1)`);
-        if (recheck === 'ok') {
-          ztoolkit.log('[VectorStore] Database repaired successfully via REINDEX');
+        const recheck = await this.db.valueQueryAsync(
+          `PRAGMA integrity_check(1)`,
+        );
+        if (recheck === "ok") {
+          ztoolkit.log(
+            "[VectorStore] Database repaired successfully via REINDEX",
+          );
           return true;
         }
-        ztoolkit.log(`[VectorStore] REINDEX did not fix corruption: ${recheck}`, 'warn');
+        ztoolkit.log(
+          `[VectorStore] REINDEX did not fix corruption: ${recheck}`,
+          "warn",
+        );
       } catch (reindexError) {
-        ztoolkit.log(`[VectorStore] REINDEX failed: ${reindexError}`, 'warn');
+        ztoolkit.log(`[VectorStore] REINDEX failed: ${reindexError}`, "warn");
       }
 
       // Step 2: Close corrupted db, backup and recreate
-      ztoolkit.log('[VectorStore] Corruption cannot be repaired in-place, recreating database...');
+      ztoolkit.log(
+        "[VectorStore] Corruption cannot be repaired in-place, recreating database...",
+      );
 
       // Close current connection
       try {
         await this.db.closeDatabase();
       } catch (closeError) {
-        ztoolkit.log(`[VectorStore] Error closing corrupted db: ${closeError}`, 'warn');
+        ztoolkit.log(
+          `[VectorStore] Error closing corrupted db: ${closeError}`,
+          "warn",
+        );
       }
 
       // Rename corrupted file as backup
-      const backupPath = this.dbPath + '.corrupt.' + Date.now();
+      const backupPath = this.dbPath + ".corrupt." + Date.now();
       try {
         await IOUtils.move(this.dbPath, backupPath);
-        ztoolkit.log(`[VectorStore] Corrupted database backed up to: ${backupPath}`);
+        ztoolkit.log(
+          `[VectorStore] Corrupted database backed up to: ${backupPath}`,
+        );
       } catch (moveError) {
-        ztoolkit.log(`[VectorStore] Failed to backup corrupted db: ${moveError}`, 'warn');
+        ztoolkit.log(
+          `[VectorStore] Failed to backup corrupted db: ${moveError}`,
+          "warn",
+        );
         // Try to remove it directly
         try {
           await IOUtils.remove(this.dbPath);
         } catch (removeError) {
-          ztoolkit.log(`[VectorStore] Failed to remove corrupted db: ${removeError}`, 'error');
-          throw new Error(`Database is corrupted and cannot be removed: ${removeError}`);
+          ztoolkit.log(
+            `[VectorStore] Failed to remove corrupted db: ${removeError}`,
+            "error",
+          );
+          throw new Error(
+            `Database is corrupted and cannot be removed: ${removeError}`,
+          );
         }
       }
 
       // Also remove WAL/SHM files if they exist
-      for (const suffix of ['-wal', '-shm']) {
+      for (const suffix of ["-wal", "-shm"]) {
         try {
           await IOUtils.remove(this.dbPath + suffix);
         } catch (_) {
@@ -209,11 +242,15 @@ export class VectorStore {
 
       // Create fresh connection
       this.db = new Zotero.DBConnection(this.dbPath);
-      ztoolkit.log('[VectorStore] Fresh database created after corruption recovery');
+      ztoolkit.log(
+        "[VectorStore] Fresh database created after corruption recovery",
+      );
 
       // Notify user
       try {
-        new ztoolkit.ProgressWindow("Zotero MCP Plugin", { closeOtherProgressWindows: false })
+        new ztoolkit.ProgressWindow("Zotero MCP Plugin", {
+          closeOtherProgressWindows: false,
+        })
           .createLine({
             text: "检测到索引数据库损坏，已自动重建。旧文件已备份。\nCorrupted index database detected and rebuilt. Old file backed up.",
             type: "default",
@@ -226,39 +263,61 @@ export class VectorStore {
       return false; // Tables need to be re-created
     } catch (error) {
       // integrity_check itself failed - likely severe corruption
-      ztoolkit.log(`[VectorStore] Integrity check query failed: ${error}`, 'error');
+      ztoolkit.log(
+        `[VectorStore] Integrity check query failed: ${error}`,
+        "error",
+      );
 
       // Try the same backup-and-recreate approach
       try {
-        try { await this.db.closeDatabase(); } catch (_) {}
+        try {
+          await this.db.closeDatabase();
+        } catch (_) {
+          // Ignore error on close
+        }
 
-        const backupPath = this.dbPath + '.corrupt.' + Date.now();
+        const backupPath = this.dbPath + ".corrupt." + Date.now();
         try {
           await IOUtils.move(this.dbPath, backupPath);
-          ztoolkit.log(`[VectorStore] Severely corrupted database backed up to: ${backupPath}`);
+          ztoolkit.log(
+            `[VectorStore] Severely corrupted database backed up to: ${backupPath}`,
+          );
         } catch (_) {
           await IOUtils.remove(this.dbPath);
         }
 
-        for (const suffix of ['-wal', '-shm']) {
-          try { await IOUtils.remove(this.dbPath + suffix); } catch (_) {}
+        for (const suffix of ["-wal", "-shm"]) {
+          try {
+            await IOUtils.remove(this.dbPath + suffix);
+          } catch (_) {
+            // Ignore missing auxiliary files
+          }
         }
 
         this.db = new Zotero.DBConnection(this.dbPath);
-        ztoolkit.log('[VectorStore] Fresh database created after severe corruption');
+        ztoolkit.log(
+          "[VectorStore] Fresh database created after severe corruption",
+        );
 
         try {
-          new ztoolkit.ProgressWindow("Zotero MCP Plugin", { closeOtherProgressWindows: false })
+          new ztoolkit.ProgressWindow("Zotero MCP Plugin", {
+            closeOtherProgressWindows: false,
+          })
             .createLine({
               text: "检测到索引数据库严重损坏，已自动重建。旧文件已备份。\nSeverely corrupted index database detected and rebuilt. Old file backed up.",
               type: "default",
             })
             .show();
-        } catch (_) {}
+        } catch (_) {
+          // UI notification is non-critical
+        }
 
         return false;
       } catch (recreateError) {
-        ztoolkit.log(`[VectorStore] Failed to recreate database after corruption: ${recreateError}`, 'error');
+        ztoolkit.log(
+          `[VectorStore] Failed to recreate database after corruption: ${recreateError}`,
+          "error",
+        );
         throw recreateError;
       }
     }
@@ -309,12 +368,16 @@ export class VectorStore {
 
     // Migrate existing tables - add new columns if they don't exist
     try {
-      await this.db.queryAsync(`ALTER TABLE index_status ADD COLUMN item_modified TEXT`);
+      await this.db.queryAsync(
+        `ALTER TABLE index_status ADD COLUMN item_modified TEXT`,
+      );
     } catch (e) {
       // Column already exists, ignore
     }
     try {
-      await this.db.queryAsync(`ALTER TABLE index_status ADD COLUMN attachment_modified TEXT`);
+      await this.db.queryAsync(
+        `ALTER TABLE index_status ADD COLUMN attachment_modified TEXT`,
+      );
     } catch (e) {
       // Column already exists, ignore
     }
@@ -324,20 +387,26 @@ export class VectorStore {
     // vector_scale: Scale factor for dequantization
     // vector_norm: Pre-computed L2 norm for fast cosine similarity
     try {
-      await this.db.queryAsync(`ALTER TABLE embeddings ADD COLUMN vector_int8 BLOB`);
-      ztoolkit.log('[VectorStore] Added vector_int8 column');
+      await this.db.queryAsync(
+        `ALTER TABLE embeddings ADD COLUMN vector_int8 BLOB`,
+      );
+      ztoolkit.log("[VectorStore] Added vector_int8 column");
     } catch (e) {
       // Column already exists, ignore
     }
     try {
-      await this.db.queryAsync(`ALTER TABLE embeddings ADD COLUMN vector_scale REAL`);
-      ztoolkit.log('[VectorStore] Added vector_scale column');
+      await this.db.queryAsync(
+        `ALTER TABLE embeddings ADD COLUMN vector_scale REAL`,
+      );
+      ztoolkit.log("[VectorStore] Added vector_scale column");
     } catch (e) {
       // Column already exists, ignore
     }
     try {
-      await this.db.queryAsync(`ALTER TABLE embeddings ADD COLUMN vector_norm REAL`);
-      ztoolkit.log('[VectorStore] Added vector_norm column');
+      await this.db.queryAsync(
+        `ALTER TABLE embeddings ADD COLUMN vector_norm REAL`,
+      );
+      ztoolkit.log("[VectorStore] Added vector_norm column");
     } catch (e) {
       // Column already exists, ignore
     }
@@ -374,7 +443,7 @@ export class VectorStore {
     // Migration: move float32 vectors from embeddings to vectors_f32
     await this.migrateFloat32ToSeparateTable();
 
-    ztoolkit.log('[VectorStore] Tables created/verified');
+    ztoolkit.log("[VectorStore] Tables created/verified");
   }
 
   /**
@@ -387,24 +456,30 @@ export class VectorStore {
     // Check if there are any float32 vectors still in the embeddings table
     // LENGTH(vector) > 0 distinguishes real vectors from empty blob placeholder x''
     const remaining = await this.db.valueQueryAsync(
-      `SELECT COUNT(*) FROM embeddings WHERE LENGTH(vector) > 0`
+      `SELECT COUNT(*) FROM embeddings WHERE LENGTH(vector) > 0`,
     );
 
     if (!remaining || remaining === 0) {
       return; // Nothing to migrate
     }
 
-    ztoolkit.log(`[VectorStore] Migrating ${remaining} float32 vectors to vectors_f32 table...`);
+    ztoolkit.log(
+      `[VectorStore] Migrating ${remaining} float32 vectors to vectors_f32 table...`,
+    );
 
     // Show progress notification
     try {
-      new ztoolkit.ProgressWindow("Zotero MCP Plugin", { closeOtherProgressWindows: false })
+      new ztoolkit.ProgressWindow("Zotero MCP Plugin", {
+        closeOtherProgressWindows: false,
+      })
         .createLine({
           text: `正在优化向量数据库结构，共 ${remaining} 条记录...\nOptimizing vector database structure, ${remaining} records...`,
           type: "default",
         })
         .show();
-    } catch (_) {}
+    } catch (_) {
+      // UI notification is non-critical
+    }
 
     // Use pure SQL to migrate blobs - avoids JS blob binding issues (NS_ERROR_UNEXPECTED)
     // INSERT OR IGNORE ensures idempotency for partial re-runs
@@ -418,15 +493,17 @@ export class VectorStore {
       UPDATE embeddings SET vector = x'' WHERE LENGTH(vector) > 0
     `);
 
-    ztoolkit.log(`[VectorStore] Float32 migration completed: ${remaining} vectors moved to vectors_f32`);
+    ztoolkit.log(
+      `[VectorStore] Float32 migration completed: ${remaining} vectors moved to vectors_f32`,
+    );
 
     // VACUUM to reclaim freed space from cleared float32 blobs
     try {
-      ztoolkit.log('[VectorStore] Running VACUUM after float32 migration...');
+      ztoolkit.log("[VectorStore] Running VACUUM after float32 migration...");
       await this.db.queryAsync(`VACUUM`);
-      ztoolkit.log('[VectorStore] VACUUM completed');
+      ztoolkit.log("[VectorStore] VACUUM completed");
     } catch (e) {
-      ztoolkit.log(`[VectorStore] VACUUM failed (non-critical): ${e}`, 'warn');
+      ztoolkit.log(`[VectorStore] VACUUM failed (non-critical): ${e}`, "warn");
     }
   }
 
@@ -437,7 +514,9 @@ export class VectorStore {
   async insertVector(record: VectorRecord): Promise<void> {
     await this.ensureInitialized();
 
-    ztoolkit.log(`[VectorStore] insertVector: ${record.itemKey}_${record.chunkId}, dims=${record.vector.length}, lang=${record.language}`);
+    ztoolkit.log(
+      `[VectorStore] insertVector: ${record.itemKey}_${record.chunkId}, dims=${record.vector.length}, lang=${record.language}`,
+    );
 
     const vectorBlob = this.float32ArrayToBuffer(record.vector);
 
@@ -447,23 +526,25 @@ export class VectorStore {
     const int8Base64 = this.int8ArrayToBase64(quantized.int8Data);
 
     // Write int8 + metadata to embeddings (vector column = empty blob placeholder)
-    await this.db.queryAsync(`INSERT OR REPLACE INTO embeddings (item_key, chunk_id, vector, language, chunk_text, dimensions, vector_int8, vector_scale, vector_norm) VALUES (?, ?, x'', ?, ?, ?, ?, ?, ?)`, [
-      record.itemKey,
-      record.chunkId,
-      record.language,
-      record.chunkText || '',
-      record.vector.length,
-      int8Base64,
-      quantized.scale,
-      quantized.norm
-    ]);
+    await this.db.queryAsync(
+      `INSERT OR REPLACE INTO embeddings (item_key, chunk_id, vector, language, chunk_text, dimensions, vector_int8, vector_scale, vector_norm) VALUES (?, ?, x'', ?, ?, ?, ?, ?, ?)`,
+      [
+        record.itemKey,
+        record.chunkId,
+        record.language,
+        record.chunkText || "",
+        record.vector.length,
+        int8Base64,
+        quantized.scale,
+        quantized.norm,
+      ],
+    );
 
     // Write float32 vector to separate table
-    await this.db.queryAsync(`INSERT OR REPLACE INTO vectors_f32 (item_key, chunk_id, vector) VALUES (?, ?, ?)`, [
-      record.itemKey,
-      record.chunkId,
-      vectorBlob
-    ]);
+    await this.db.queryAsync(
+      `INSERT OR REPLACE INTO vectors_f32 (item_key, chunk_id, vector) VALUES (?, ?, ?)`,
+      [record.itemKey, record.chunkId, vectorBlob],
+    );
 
     // Update cache
     const cacheKey = `${record.itemKey}_${record.chunkId}`;
@@ -489,27 +570,31 @@ export class VectorStore {
         const int8Base64 = this.int8ArrayToBase64(quantized.int8Data);
 
         // Write int8 + metadata to embeddings (vector column = empty blob placeholder)
-        await this.db.queryAsync(`INSERT OR REPLACE INTO embeddings (item_key, chunk_id, vector, language, chunk_text, dimensions, vector_int8, vector_scale, vector_norm) VALUES (?, ?, x'', ?, ?, ?, ?, ?, ?)`, [
-          record.itemKey,
-          record.chunkId,
-          record.language,
-          record.chunkText || '',
-          record.vector.length,
-          int8Base64,
-          quantized.scale,
-          quantized.norm
-        ]);
+        await this.db.queryAsync(
+          `INSERT OR REPLACE INTO embeddings (item_key, chunk_id, vector, language, chunk_text, dimensions, vector_int8, vector_scale, vector_norm) VALUES (?, ?, x'', ?, ?, ?, ?, ?, ?)`,
+          [
+            record.itemKey,
+            record.chunkId,
+            record.language,
+            record.chunkText || "",
+            record.vector.length,
+            int8Base64,
+            quantized.scale,
+            quantized.norm,
+          ],
+        );
 
         // Write float32 vector to separate table
-        await this.db.queryAsync(`INSERT OR REPLACE INTO vectors_f32 (item_key, chunk_id, vector) VALUES (?, ?, ?)`, [
-          record.itemKey,
-          record.chunkId,
-          vectorBlob
-        ]);
+        await this.db.queryAsync(
+          `INSERT OR REPLACE INTO vectors_f32 (item_key, chunk_id, vector) VALUES (?, ?, ?)`,
+          [record.itemKey, record.chunkId, vectorBlob],
+        );
       }
     });
 
-    ztoolkit.log(`[VectorStore] Inserted ${records.length} vectors with Int8 quantization`);
+    ztoolkit.log(
+      `[VectorStore] Inserted ${records.length} vectors with Int8 quantization`,
+    );
   }
 
   /**
@@ -528,29 +613,31 @@ export class VectorStore {
     queryVector: Float32Array,
     options: {
       topK?: number;
-      language?: 'zh' | 'en' | 'all';
+      language?: "zh" | "en" | "all";
       itemKeys?: string[];
       minScore?: number;
-    } = {}
+    } = {},
   ): Promise<SearchResult[]> {
     await this.ensureInitialized();
 
-    const { topK = 10, language = 'all', itemKeys, minScore = 0 } = options;
+    const { topK = 10, language = "all", itemKeys, minScore = 0 } = options;
     const startTime = Date.now();
 
-    ztoolkit.log(`[VectorStore] search() start: instanceId=${this.instanceId}, topK=${topK}, lang=${language}, minScore=${minScore}, queryDims=${queryVector.length}`);
+    ztoolkit.log(
+      `[VectorStore] search() start: instanceId=${this.instanceId}, topK=${topK}, lang=${language}, minScore=${minScore}, queryDims=${queryVector.length}`,
+    );
 
     // Build query conditions
-    const conditions: string[] = ['1=1'];
+    const conditions: string[] = ["1=1"];
     const params: any[] = [];
 
-    if (language !== 'all') {
-      conditions.push('language = ?');
+    if (language !== "all") {
+      conditions.push("language = ?");
       params.push(language);
     }
 
     if (itemKeys && itemKeys.length > 0) {
-      const placeholders = itemKeys.map(() => '?').join(',');
+      const placeholders = itemKeys.map(() => "?").join(",");
       conditions.push(`item_key IN (${placeholders})`);
       params.push(...itemKeys);
     }
@@ -563,9 +650,14 @@ export class VectorStore {
     let batchCount = 0;
 
     // Get total count first
-    const whereClause = conditions.join(' AND ');
-    const totalCount = await this.db.valueQueryAsync(`SELECT COUNT(*) FROM embeddings WHERE ${whereClause}`, params);
-    ztoolkit.log(`[VectorStore] search() total vectors: ${totalCount}, batch size: ${BATCH_SIZE}`);
+    const whereClause = conditions.join(" AND ");
+    const totalCount = await this.db.valueQueryAsync(
+      `SELECT COUNT(*) FROM embeddings WHERE ${whereClause}`,
+      params,
+    );
+    ztoolkit.log(
+      `[VectorStore] search() total vectors: ${totalCount}, batch size: ${BATCH_SIZE}`,
+    );
 
     if (!totalCount || totalCount === 0) {
       ztoolkit.log(`[VectorStore] search() no vectors found`);
@@ -573,28 +665,42 @@ export class VectorStore {
     }
 
     // Check stored vector dimensions - if they don't match query dimensions, search will fail
-    const storedDimsRow = await this.db.queryAsync(`SELECT dimensions FROM embeddings WHERE ${whereClause} LIMIT 1`, params);
+    const storedDimsRow = await this.db.queryAsync(
+      `SELECT dimensions FROM embeddings WHERE ${whereClause} LIMIT 1`,
+      params,
+    );
     if (storedDimsRow && storedDimsRow.length > 0) {
       const storedDims = storedDimsRow[0].dimensions;
       if (storedDims !== queryVector.length) {
-        ztoolkit.log(`[VectorStore] CRITICAL: Dimension mismatch! Query=${queryVector.length}, Stored=${storedDims}. You need to re-index with the current embedding model.`, 'error');
+        ztoolkit.log(
+          `[VectorStore] CRITICAL: Dimension mismatch! Query=${queryVector.length}, Stored=${storedDims}. You need to re-index with the current embedding model.`,
+          "error",
+        );
         // Return empty results with a clear error - vectors of different dimensions cannot be compared
         return [];
       }
     }
 
     // Check if Int8 data is available (for backward compatibility)
-    const hasInt8 = await this.db.valueQueryAsync(`SELECT COUNT(*) FROM embeddings WHERE vector_int8 IS NOT NULL AND ${whereClause}`, params);
+    const hasInt8 = await this.db.valueQueryAsync(
+      `SELECT COUNT(*) FROM embeddings WHERE vector_int8 IS NOT NULL AND ${whereClause}`,
+      params,
+    );
     const useInt8 = hasInt8 > 0 && hasInt8 >= totalCount * 0.9; // Use Int8 if >90% have it
 
-    ztoolkit.log(`[VectorStore] search() using ${useInt8 ? 'Int8 optimized' : 'Float32 fallback'} search (${hasInt8}/${totalCount} have Int8)`);
+    ztoolkit.log(
+      `[VectorStore] search() using ${useInt8 ? "Int8 optimized" : "Float32 fallback"} search (${hasInt8}/${totalCount} have Int8)`,
+    );
 
     // Pre-compute query vector data
     const queryQuantized = this.quantizeWithNorm(queryVector);
-    const { normalized: normalizedQuery, norm: queryNorm } = this.prepareQueryVector(queryVector);
+    const { normalized: normalizedQuery, norm: queryNorm } =
+      this.prepareQueryVector(queryVector);
 
     if (queryNorm === 0) {
-      ztoolkit.log(`[VectorStore] search() query vector has zero norm, returning empty results`);
+      ztoolkit.log(
+        `[VectorStore] search() query vector has zero norm, returning empty results`,
+      );
       return [];
     }
 
@@ -607,8 +713,9 @@ export class VectorStore {
       const abs = Math.abs(queryVector[i]);
       if (abs > queryMaxAbs) queryMaxAbs = abs;
     }
-    ztoolkit.log(`[VectorStore] search() query: float32[0:5]=[${Array.from(querySample).map(v => v.toFixed(4))}], int8[0:5]=[${Array.from(queryInt8Sample)}], norm=${queryNorm.toFixed(4)}, scale=${queryMaxAbs > 0 ? (127 / queryMaxAbs).toFixed(4) : 'N/A'}`);
-
+    ztoolkit.log(
+      `[VectorStore] search() query: float32[0:5]=[${Array.from(querySample).map((v) => v.toFixed(4))}], int8[0:5]=[${Array.from(queryInt8Sample)}], norm=${queryNorm.toFixed(4)}, scale=${queryMaxAbs > 0 ? (127 / queryMaxAbs).toFixed(4) : "N/A"}`,
+    );
 
     // Min-heap to track top K results efficiently
     const minHeap: SearchResult[] = [];
@@ -632,13 +739,18 @@ export class VectorStore {
       // Select appropriate columns based on availability
       // Float32 vectors are in vectors_f32 table — only load when needed (fallback path)
       const selectCols = useInt8
-        ? 'item_key, chunk_id, vector_int8, vector_scale, vector_norm, language, chunk_text, dimensions'
-        : 'item_key, chunk_id, language, chunk_text, dimensions';
+        ? "item_key, chunk_id, vector_int8, vector_scale, vector_norm, language, chunk_text, dimensions"
+        : "item_key, chunk_id, language, chunk_text, dimensions";
 
-      const rows = await this.db.queryAsync(`SELECT ${selectCols} FROM embeddings WHERE ${whereClause} LIMIT ? OFFSET ?`, batchParams);
+      const rows = await this.db.queryAsync(
+        `SELECT ${selectCols} FROM embeddings WHERE ${whereClause} LIMIT ? OFFSET ?`,
+        batchParams,
+      );
 
       if (!rows || rows.length === 0) {
-        ztoolkit.log(`[VectorStore] search() batch ${batchCount} returned no rows at offset ${offset}`);
+        ztoolkit.log(
+          `[VectorStore] search() batch ${batchCount} returned no rows at offset ${offset}`,
+        );
         break;
       }
 
@@ -654,29 +766,48 @@ export class VectorStore {
           const queryDims = queryVector.length;
           const storedDims = row.dimensions;
 
-          if (useInt8 && row.vector_int8 && row.vector_norm && queryDims === storedDims) {
+          if (
+            useInt8 &&
+            row.vector_int8 &&
+            row.vector_norm &&
+            queryDims === storedDims
+          ) {
             // Optimized Int8 path with pre-computed norm
-            const storedInt8 = this.bufferToInt8Array(row.vector_int8, row.dimensions);
+            const storedInt8 = this.bufferToInt8Array(
+              row.vector_int8,
+              row.dimensions,
+            );
 
             // Verify decoded array length matches expected dimensions
             if (storedInt8.length !== queryQuantized.int8Data.length) {
               // Length mismatch - fall back to Float32 from vectors_f32 table
-              const f32Row = await this.db.queryAsync(`SELECT vector FROM vectors_f32 WHERE item_key = ? AND chunk_id = ?`, [row.item_key, row.chunk_id]);
+              const f32Row = await this.db.queryAsync(
+                `SELECT vector FROM vectors_f32 WHERE item_key = ? AND chunk_id = ?`,
+                [row.item_key, row.chunk_id],
+              );
               if (f32Row && f32Row.length > 0) {
-                const storedVector = this.bufferToFloat32Array(f32Row[0].vector, row.dimensions);
-                score = this.cosineSimilarityWithNormalizedQuery(normalizedQuery, storedVector);
+                const storedVector = this.bufferToFloat32Array(
+                  f32Row[0].vector,
+                  row.dimensions,
+                );
+                score = this.cosineSimilarityWithNormalizedQuery(
+                  normalizedQuery,
+                  storedVector,
+                );
               } else {
                 continue; // Skip this vector — no fallback available
               }
               if (debugSampleCount === 0) {
-                ztoolkit.log(`[VectorStore] WARNING: Int8 length mismatch: query=${queryQuantized.int8Data.length}, stored=${storedInt8.length}, using Float32 fallback from vectors_f32`);
+                ztoolkit.log(
+                  `[VectorStore] WARNING: Int8 length mismatch: query=${queryQuantized.int8Data.length}, stored=${storedInt8.length}, using Float32 fallback from vectors_f32`,
+                );
               }
             } else {
               score = this.cosineSimilarityInt8WithNorm(
                 queryQuantized.int8Data,
                 queryQuantized.norm,
                 storedInt8,
-                row.vector_norm
+                row.vector_norm,
               );
 
               // Debug: log first few vectors to diagnose issues
@@ -692,31 +823,59 @@ export class VectorStore {
                 // Also compute Float32 similarity for comparison (load from vectors_f32)
                 let float32Score = NaN;
                 let sampleFloat32: Float32Array = new Float32Array(0);
-                const debugF32Row = await this.db.queryAsync(`SELECT vector FROM vectors_f32 WHERE item_key = ? AND chunk_id = ?`, [row.item_key, row.chunk_id]);
+                const debugF32Row = await this.db.queryAsync(
+                  `SELECT vector FROM vectors_f32 WHERE item_key = ? AND chunk_id = ?`,
+                  [row.item_key, row.chunk_id],
+                );
                 if (debugF32Row && debugF32Row.length > 0) {
-                  const storedFloat32 = this.bufferToFloat32Array(debugF32Row[0].vector, row.dimensions);
-                  float32Score = this.cosineSimilarityWithNormalizedQuery(normalizedQuery, storedFloat32);
+                  const storedFloat32 = this.bufferToFloat32Array(
+                    debugF32Row[0].vector,
+                    row.dimensions,
+                  );
+                  float32Score = this.cosineSimilarityWithNormalizedQuery(
+                    normalizedQuery,
+                    storedFloat32,
+                  );
                   sampleFloat32 = storedFloat32.slice(0, 5);
                 }
 
                 ztoolkit.log(`[VectorStore] DEBUG sample ${debugSampleCount}:`);
-                ztoolkit.log(`  Int8 score=${score.toFixed(4)}, Float32 score=${isNaN(float32Score) ? 'N/A' : float32Score.toFixed(4)}, diff=${isNaN(float32Score) ? 'N/A' : Math.abs(score - float32Score).toFixed(4)}`);
+                ztoolkit.log(
+                  `  Int8 score=${score.toFixed(4)}, Float32 score=${isNaN(float32Score) ? "N/A" : float32Score.toFixed(4)}, diff=${isNaN(float32Score) ? "N/A" : Math.abs(score - float32Score).toFixed(4)}`,
+                );
                 ztoolkit.log(`  queryInt8[0:5]=[${Array.from(sampleQuery)}]`);
-                ztoolkit.log(`  storedInt8[0:5]=[${Array.from(sampleStored)}], nonZero=${nonZeroCount}/100`);
-                ztoolkit.log(`  storedFloat32[0:5]=[${Array.from(sampleFloat32).map(v => v.toFixed(4))}]`);
-                ztoolkit.log(`  base64Len=${typeof row.vector_int8 === 'string' ? row.vector_int8.length : 'N/A'}, int8ArrayLen=${storedInt8.length}`);
+                ztoolkit.log(
+                  `  storedInt8[0:5]=[${Array.from(sampleStored)}], nonZero=${nonZeroCount}/100`,
+                );
+                ztoolkit.log(
+                  `  storedFloat32[0:5]=[${Array.from(sampleFloat32).map((v) => v.toFixed(4))}]`,
+                );
+                ztoolkit.log(
+                  `  base64Len=${typeof row.vector_int8 === "string" ? row.vector_int8.length : "N/A"}, int8ArrayLen=${storedInt8.length}`,
+                );
                 debugSampleCount++;
               }
             }
           } else {
             // Fallback to Float32 from vectors_f32 table (dimension mismatch or no Int8 data)
             if (queryDims !== storedDims) {
-              ztoolkit.log(`[VectorStore] Dimension mismatch: query=${queryDims}, stored=${storedDims}, falling back to Float32`);
+              ztoolkit.log(
+                `[VectorStore] Dimension mismatch: query=${queryDims}, stored=${storedDims}, falling back to Float32`,
+              );
             }
-            const f32Row = await this.db.queryAsync(`SELECT vector FROM vectors_f32 WHERE item_key = ? AND chunk_id = ?`, [row.item_key, row.chunk_id]);
+            const f32Row = await this.db.queryAsync(
+              `SELECT vector FROM vectors_f32 WHERE item_key = ? AND chunk_id = ?`,
+              [row.item_key, row.chunk_id],
+            );
             if (f32Row && f32Row.length > 0) {
-              const storedVector = this.bufferToFloat32Array(f32Row[0].vector, row.dimensions);
-              score = this.cosineSimilarityWithNormalizedQuery(normalizedQuery, storedVector);
+              const storedVector = this.bufferToFloat32Array(
+                f32Row[0].vector,
+                row.dimensions,
+              );
+              score = this.cosineSimilarityWithNormalizedQuery(
+                normalizedQuery,
+                storedVector,
+              );
             } else {
               continue; // Skip — no float32 vector available
             }
@@ -740,7 +899,7 @@ export class VectorStore {
               chunkId: row.chunk_id,
               score,
               chunkText: row.chunk_text,
-              language: row.language
+              language: row.language,
             };
 
             // Maintain top K using simple array (efficient for small K)
@@ -763,22 +922,33 @@ export class VectorStore {
       const computeTime = Date.now() - computeStartTime;
       offset += rows.length;
 
-      ztoolkit.log(`[VectorStore] search() batch ${batchCount}: ${rows.length} vectors, IO=${ioTime}ms, compute=${computeTime}ms, progress=${offset}/${totalCount}`);
+      ztoolkit.log(
+        `[VectorStore] search() batch ${batchCount}: ${rows.length} vectors, IO=${ioTime}ms, compute=${computeTime}ms, progress=${offset}/${totalCount}`,
+      );
     }
 
     // Final sort (descending by score)
     const topResults = minHeap.sort((a, b) => b.score - a.score);
 
     const searchTime = Date.now() - startTime;
-    const topScores = topResults.slice(0, 5).map(r => r.score.toFixed(3)).join(', ');
-    ztoolkit.log(`[VectorStore] search() completed in ${searchTime}ms: ${totalScanned} vectors in ${batchCount} batches, returning ${topResults.length}`);
+    const topScores = topResults
+      .slice(0, 5)
+      .map((r) => r.score.toFixed(3))
+      .join(", ");
+    ztoolkit.log(
+      `[VectorStore] search() completed in ${searchTime}ms: ${totalScanned} vectors in ${batchCount} batches, returning ${topResults.length}`,
+    );
 
     // Log score statistics for debugging
     if (scoreCount > 0) {
       const avgScore = scoreSum / scoreCount;
-      ztoolkit.log(`[VectorStore] search() score stats: min=${scoreMin.toFixed(4)}, max=${scoreMax.toFixed(4)}, avg=${avgScore.toFixed(4)}, NaN=${nanCount}`);
+      ztoolkit.log(
+        `[VectorStore] search() score stats: min=${scoreMin.toFixed(4)}, max=${scoreMax.toFixed(4)}, avg=${avgScore.toFixed(4)}, NaN=${nanCount}`,
+      );
     } else if (nanCount > 0) {
-      ztoolkit.log(`[VectorStore] search() WARNING: All ${nanCount} scores were NaN! Check dimension mismatch or data corruption.`);
+      ztoolkit.log(
+        `[VectorStore] search() WARNING: All ${nanCount} scores were NaN! Check dimension mismatch or data corruption.`,
+      );
     }
 
     if (topResults.length > 0) {
@@ -809,16 +979,38 @@ export class VectorStore {
    * Bulk-load index_status change-detection fields for incremental build
    * selection (#100)
    */
-  async getIndexStatusMap(): Promise<Map<string, { contentHash: string; itemModified: string | null; attachmentModified: string | null }>> {
+  async getIndexStatusMap(): Promise<
+    Map<
+      string,
+      {
+        contentHash: string;
+        itemModified: string | null;
+        attachmentModified: string | null;
+      }
+    >
+  > {
     await this.ensureInitialized();
 
     // IMPORTANT: Single-line query to avoid Zotero queryAsync bug with multi-line SQL
-    const rows = await this.db.queryAsync(`SELECT item_key, content_hash, item_modified, attachment_modified FROM index_status`);
+    const rows = await this.db.queryAsync(
+      `SELECT item_key, content_hash, item_modified, attachment_modified FROM index_status`,
+    );
 
-    const map = new Map<string, { contentHash: string; itemModified: string | null; attachmentModified: string | null }>();
+    const map = new Map<
+      string,
+      {
+        contentHash: string;
+        itemModified: string | null;
+        attachmentModified: string | null;
+      }
+    >();
     if (rows && rows.length > 0) {
       for (const r of rows) {
-        map.set(r.item_key, { contentHash: r.content_hash, itemModified: r.item_modified, attachmentModified: r.attachment_modified });
+        map.set(r.item_key, {
+          contentHash: r.content_hash,
+          itemModified: r.item_modified,
+          attachmentModified: r.attachment_modified,
+        });
       }
     }
     return map;
@@ -833,7 +1025,10 @@ export class VectorStore {
     await this.ensureInitialized();
 
     // IMPORTANT: Single-line query to avoid Zotero queryAsync bug with multi-line SQL
-    const rows = await this.db.queryAsync(`SELECT item_key FROM index_status WHERE content_hash NOT LIKE ?`, ['failed:%']);
+    const rows = await this.db.queryAsync(
+      `SELECT item_key FROM index_status WHERE content_hash NOT LIKE ?`,
+      ["failed:%"],
+    );
 
     if (!rows || rows.length === 0) {
       return new Set();
@@ -849,7 +1044,10 @@ export class VectorStore {
     await this.ensureInitialized();
 
     // IMPORTANT: Single-line query to avoid Zotero queryAsync bug with multi-line SQL
-    const rows = await this.db.queryAsync(`SELECT item_key FROM index_status WHERE content_hash LIKE ?`, ['failed:%']);
+    const rows = await this.db.queryAsync(
+      `SELECT item_key FROM index_status WHERE content_hash LIKE ?`,
+      ["failed:%"],
+    );
 
     return rows && rows.length > 0 ? rows.map((r: any) => r.item_key) : [];
   }
@@ -862,10 +1060,16 @@ export class VectorStore {
 
     if (keys && keys.length > 0) {
       for (const key of keys) {
-        await this.db.queryAsync(`DELETE FROM index_status WHERE item_key = ? AND content_hash LIKE ?`, [key, 'failed:%']);
+        await this.db.queryAsync(
+          `DELETE FROM index_status WHERE item_key = ? AND content_hash LIKE ?`,
+          [key, "failed:%"],
+        );
       }
     } else {
-      await this.db.queryAsync(`DELETE FROM index_status WHERE content_hash LIKE ?`, ['failed:%']);
+      await this.db.queryAsync(
+        `DELETE FROM index_status WHERE content_hash LIKE ?`,
+        ["failed:%"],
+      );
     }
   }
 
@@ -876,7 +1080,10 @@ export class VectorStore {
     await this.ensureInitialized();
 
     // IMPORTANT: Single-line query to avoid Zotero queryAsync bug with multi-line SQL
-    const rows = await this.db.queryAsync(`SELECT item_key, indexed_at, version, chunk_count, content_hash, item_modified, attachment_modified FROM index_status WHERE item_key = ?`, [itemKey]);
+    const rows = await this.db.queryAsync(
+      `SELECT item_key, indexed_at, version, chunk_count, content_hash, item_modified, attachment_modified FROM index_status WHERE item_key = ?`,
+      [itemKey],
+    );
 
     // Zotero's queryAsync returns undefined when no rows found
     if (!rows || rows.length === 0) return null;
@@ -889,7 +1096,7 @@ export class VectorStore {
       contentHash: row.content_hash,
       version: row.version,
       itemModified: row.item_modified,
-      attachmentModified: row.attachment_modified
+      attachmentModified: row.attachment_modified,
     };
   }
 
@@ -901,15 +1108,24 @@ export class VectorStore {
     chunkCount: number,
     contentHash: string,
     itemModified?: string,
-    attachmentModified?: string
+    attachmentModified?: string,
   ): Promise<void> {
     await this.ensureInitialized();
 
-    await this.db.queryAsync(`
+    await this.db.queryAsync(
+      `
       INSERT OR REPLACE INTO index_status
       (item_key, indexed_at, version, chunk_count, content_hash, item_modified, attachment_modified)
       VALUES (?, strftime('%s', 'now'), 1, ?, ?, ?, ?)
-    `, [itemKey, chunkCount, contentHash, itemModified || null, attachmentModified || null]);
+    `,
+      [
+        itemKey,
+        chunkCount,
+        contentHash,
+        itemModified || null,
+        attachmentModified || null,
+      ],
+    );
   }
 
   /**
@@ -919,7 +1135,7 @@ export class VectorStore {
   async needsReindexByTimestamp(
     itemKey: string,
     itemModified: string,
-    attachmentModified: string
+    attachmentModified: string,
   ): Promise<boolean> {
     const status = await this.getIndexStatus(itemKey);
 
@@ -952,30 +1168,42 @@ export class VectorStore {
    * Get cached content for an item
    * Returns null if not cached or hash doesn't match
    */
-  async getCachedContent(itemKey: string): Promise<{ content: string; hash: string } | null> {
+  async getCachedContent(
+    itemKey: string,
+  ): Promise<{ content: string; hash: string } | null> {
     await this.ensureInitialized();
 
     // IMPORTANT: Single-line query to avoid Zotero queryAsync bug with multi-line SQL
-    const rows = await this.db.queryAsync(`SELECT full_content, content_hash FROM content_cache WHERE item_key = ?`, [itemKey]);
+    const rows = await this.db.queryAsync(
+      `SELECT full_content, content_hash FROM content_cache WHERE item_key = ?`,
+      [itemKey],
+    );
 
     if (!rows || rows.length === 0) return null;
 
     return {
       content: rows[0].full_content,
-      hash: rows[0].content_hash
+      hash: rows[0].content_hash,
     };
   }
 
   /**
    * Set cached content for an item
    */
-  async setCachedContent(itemKey: string, content: string, contentHash: string): Promise<void> {
+  async setCachedContent(
+    itemKey: string,
+    content: string,
+    contentHash: string,
+  ): Promise<void> {
     await this.ensureInitialized();
 
-    await this.db.queryAsync(`
+    await this.db.queryAsync(
+      `
       INSERT OR REPLACE INTO content_cache (item_key, full_content, content_hash, cached_at)
       VALUES (?, ?, ?, strftime('%s', 'now'))
-    `, [itemKey, content, contentHash]);
+    `,
+      [itemKey, content, contentHash],
+    );
   }
 
   /**
@@ -984,22 +1212,28 @@ export class VectorStore {
   async deleteCachedContent(itemKey: string): Promise<void> {
     await this.ensureInitialized();
 
-    await this.db.queryAsync(`DELETE FROM content_cache WHERE item_key = ?`, [itemKey]);
+    await this.db.queryAsync(`DELETE FROM content_cache WHERE item_key = ?`, [
+      itemKey,
+    ]);
   }
 
   /**
    * Get all cached content item keys with metadata
    */
-  async listCachedContent(): Promise<Array<{
-    itemKey: string;
-    contentLength: number;
-    hash: string;
-    cachedAt: number;
-  }>> {
+  async listCachedContent(): Promise<
+    Array<{
+      itemKey: string;
+      contentLength: number;
+      hash: string;
+      cachedAt: number;
+    }>
+  > {
     await this.ensureInitialized();
 
     // IMPORTANT: Single-line query to avoid Zotero queryAsync bug with multi-line SQL
-    const rows = await this.db.queryAsync(`SELECT item_key, LENGTH(full_content) as content_length, content_hash, cached_at FROM content_cache ORDER BY cached_at DESC`);
+    const rows = await this.db.queryAsync(
+      `SELECT item_key, LENGTH(full_content) as content_length, content_hash, cached_at FROM content_cache ORDER BY cached_at DESC`,
+    );
 
     if (!rows || rows.length === 0) return [];
 
@@ -1007,7 +1241,7 @@ export class VectorStore {
       itemKey: row.item_key,
       contentLength: row.content_length,
       hash: row.content_hash,
-      cachedAt: row.cached_at
+      cachedAt: row.cached_at,
     }));
   }
 
@@ -1017,12 +1251,14 @@ export class VectorStore {
    */
   async searchCachedContent(
     searchTerm: string,
-    options: { limit?: number; caseSensitive?: boolean } = {}
-  ): Promise<Array<{
-    itemKey: string;
-    snippet: string;
-    matchCount: number;
-  }>> {
+    options: { limit?: number; caseSensitive?: boolean } = {},
+  ): Promise<
+    Array<{
+      itemKey: string;
+      snippet: string;
+      matchCount: number;
+    }>
+  > {
     await this.ensureInitialized();
 
     const { limit = 20, caseSensitive = false } = options;
@@ -1031,11 +1267,18 @@ export class VectorStore {
     const searchPattern = `%${searchTerm}%`;
 
     // IMPORTANT: Single-line query to avoid Zotero queryAsync bug with multi-line SQL
-    const rows = await this.db.queryAsync(`SELECT item_key, full_content FROM content_cache WHERE full_content LIKE ? LIMIT ?`, [searchPattern, limit * 2]); // Fetch more to account for filtering
+    const rows = await this.db.queryAsync(
+      `SELECT item_key, full_content FROM content_cache WHERE full_content LIKE ? LIMIT ?`,
+      [searchPattern, limit * 2],
+    ); // Fetch more to account for filtering
 
     if (!rows || rows.length === 0) return [];
 
-    const results: Array<{ itemKey: string; snippet: string; matchCount: number }> = [];
+    const results: Array<{
+      itemKey: string;
+      snippet: string;
+      matchCount: number;
+    }> = [];
 
     for (const row of rows) {
       const content: string = row.full_content;
@@ -1054,15 +1297,18 @@ export class VectorStore {
         // Extract snippet around first match
         const firstMatch = contentToSearch.indexOf(searchStr);
         const snippetStart = Math.max(0, firstMatch - 100);
-        const snippetEnd = Math.min(content.length, firstMatch + searchTerm.length + 100);
+        const snippetEnd = Math.min(
+          content.length,
+          firstMatch + searchTerm.length + 100,
+        );
         let snippet = content.substring(snippetStart, snippetEnd);
-        if (snippetStart > 0) snippet = '...' + snippet;
-        if (snippetEnd < content.length) snippet = snippet + '...';
+        if (snippetStart > 0) snippet = "..." + snippet;
+        if (snippetEnd < content.length) snippet = snippet + "...";
 
         results.push({
           itemKey: row.item_key,
           snippet,
-          matchCount
+          matchCount,
         });
       }
 
@@ -1092,9 +1338,12 @@ export class VectorStore {
     const result = new Map<string, string>();
     if (itemKeys.length === 0) return result;
 
-    const placeholders = itemKeys.map(() => '?').join(',');
+    const placeholders = itemKeys.map(() => "?").join(",");
     // IMPORTANT: Single-line query to avoid Zotero queryAsync bug with multi-line SQL
-    const rows = await this.db.queryAsync(`SELECT item_key, full_content FROM content_cache WHERE item_key IN (${placeholders})`, itemKeys);
+    const rows = await this.db.queryAsync(
+      `SELECT item_key, full_content FROM content_cache WHERE item_key IN (${placeholders})`,
+      itemKeys,
+    );
 
     if (!rows || rows.length === 0) return result;
 
@@ -1110,26 +1359,26 @@ export class VectorStore {
    * @param itemKey The item key to delete
    * @param deleteContentCache If true, also delete content cache (use when item is permanently deleted)
    */
-  async deleteItemVectors(itemKey: string, deleteContentCache: boolean = false): Promise<void> {
+  async deleteItemVectors(
+    itemKey: string,
+    deleteContentCache: boolean = false,
+  ): Promise<void> {
     await this.ensureInitialized();
 
     await this.db.executeTransaction(async () => {
-      await this.db.queryAsync(
-        `DELETE FROM embeddings WHERE item_key = ?`,
-        [itemKey]
-      );
-      await this.db.queryAsync(
-        `DELETE FROM vectors_f32 WHERE item_key = ?`,
-        [itemKey]
-      );
-      await this.db.queryAsync(
-        `DELETE FROM index_status WHERE item_key = ?`,
-        [itemKey]
-      );
+      await this.db.queryAsync(`DELETE FROM embeddings WHERE item_key = ?`, [
+        itemKey,
+      ]);
+      await this.db.queryAsync(`DELETE FROM vectors_f32 WHERE item_key = ?`, [
+        itemKey,
+      ]);
+      await this.db.queryAsync(`DELETE FROM index_status WHERE item_key = ?`, [
+        itemKey,
+      ]);
       if (deleteContentCache) {
         await this.db.queryAsync(
           `DELETE FROM content_cache WHERE item_key = ?`,
-          [itemKey]
+          [itemKey],
         );
       }
     });
@@ -1141,8 +1390,12 @@ export class VectorStore {
       }
     }
 
-    const cacheMsg = deleteContentCache ? 'including content cache' : 'content cache preserved';
-    ztoolkit.log(`[VectorStore] Deleted vectors for item: ${itemKey} (${cacheMsg})`);
+    const cacheMsg = deleteContentCache
+      ? "including content cache"
+      : "content cache preserved";
+    ztoolkit.log(
+      `[VectorStore] Deleted vectors for item: ${itemKey} (${cacheMsg})`,
+    );
   }
 
   /**
@@ -1153,12 +1406,20 @@ export class VectorStore {
     await this.ensureInitialized();
 
     // Log which database we're clearing
-    ztoolkit.log(`[VectorStore] clear() called on instanceId=${this.instanceId}, dbPath=${this.dbPath}`);
+    ztoolkit.log(
+      `[VectorStore] clear() called on instanceId=${this.instanceId}, dbPath=${this.dbPath}`,
+    );
 
     // Get counts before deletion for logging
-    const beforeEmbeddings = await this.db.valueQueryAsync(`SELECT COUNT(*) FROM embeddings`);
-    const beforeIndex = await this.db.valueQueryAsync(`SELECT COUNT(*) FROM index_status`);
-    ztoolkit.log(`[VectorStore] clear() starting: embeddings=${beforeEmbeddings}, index_status=${beforeIndex}`);
+    const beforeEmbeddings = await this.db.valueQueryAsync(
+      `SELECT COUNT(*) FROM embeddings`,
+    );
+    const beforeIndex = await this.db.valueQueryAsync(
+      `SELECT COUNT(*) FROM index_status`,
+    );
+    ztoolkit.log(
+      `[VectorStore] clear() starting: embeddings=${beforeEmbeddings}, index_status=${beforeIndex}`,
+    );
 
     // Execute DELETE statements directly (not in transaction to ensure immediate effect)
     await this.db.queryAsync(`DELETE FROM embeddings`);
@@ -1166,21 +1427,38 @@ export class VectorStore {
     await this.db.queryAsync(`DELETE FROM index_status`);
 
     // Verify deletion
-    const afterEmbeddings = await this.db.valueQueryAsync(`SELECT COUNT(*) FROM embeddings`);
-    const afterF32 = await this.db.valueQueryAsync(`SELECT COUNT(*) FROM vectors_f32`);
-    const afterIndex = await this.db.valueQueryAsync(`SELECT COUNT(*) FROM index_status`);
-    ztoolkit.log(`[VectorStore] clear() completed: embeddings=${afterEmbeddings}, vectors_f32=${afterF32}, index_status=${afterIndex}`);
+    const afterEmbeddings = await this.db.valueQueryAsync(
+      `SELECT COUNT(*) FROM embeddings`,
+    );
+    const afterF32 = await this.db.valueQueryAsync(
+      `SELECT COUNT(*) FROM vectors_f32`,
+    );
+    const afterIndex = await this.db.valueQueryAsync(
+      `SELECT COUNT(*) FROM index_status`,
+    );
+    ztoolkit.log(
+      `[VectorStore] clear() completed: embeddings=${afterEmbeddings}, vectors_f32=${afterF32}, index_status=${afterIndex}`,
+    );
 
     if (afterEmbeddings > 0 || afterF32 > 0 || afterIndex > 0) {
-      ztoolkit.log(`[VectorStore] WARNING: clear() did not fully delete data! Retrying...`, 'warn');
+      ztoolkit.log(
+        `[VectorStore] WARNING: clear() did not fully delete data! Retrying...`,
+        "warn",
+      );
       // Retry with explicit SQL
       await this.db.queryAsync(`DELETE FROM embeddings WHERE 1=1`);
       await this.db.queryAsync(`DELETE FROM vectors_f32 WHERE 1=1`);
       await this.db.queryAsync(`DELETE FROM index_status WHERE 1=1`);
 
-      const finalEmbeddings = await this.db.valueQueryAsync(`SELECT COUNT(*) FROM embeddings`);
-      const finalIndex = await this.db.valueQueryAsync(`SELECT COUNT(*) FROM index_status`);
-      ztoolkit.log(`[VectorStore] clear() retry result: embeddings=${finalEmbeddings}, index_status=${finalIndex}`);
+      const finalEmbeddings = await this.db.valueQueryAsync(
+        `SELECT COUNT(*) FROM embeddings`,
+      );
+      const finalIndex = await this.db.valueQueryAsync(
+        `SELECT COUNT(*) FROM index_status`,
+      );
+      ztoolkit.log(
+        `[VectorStore] clear() retry result: embeddings=${finalEmbeddings}, index_status=${finalIndex}`,
+      );
     }
 
     this.vectorCache.clear();
@@ -1192,7 +1470,10 @@ export class VectorStore {
       await this.db.queryAsync(`VACUUM`);
       ztoolkit.log(`[VectorStore] VACUUM completed`);
     } catch (vacuumError) {
-      ztoolkit.log(`[VectorStore] VACUUM failed (non-critical): ${vacuumError}`, 'warn');
+      ztoolkit.log(
+        `[VectorStore] VACUUM failed (non-critical): ${vacuumError}`,
+        "warn",
+      );
     }
   }
 
@@ -1204,10 +1485,18 @@ export class VectorStore {
     await this.ensureInitialized();
 
     // Get counts before deletion for logging
-    const beforeEmbeddings = await this.db.valueQueryAsync(`SELECT COUNT(*) FROM embeddings`);
-    const beforeIndex = await this.db.valueQueryAsync(`SELECT COUNT(*) FROM index_status`);
-    const beforeCache = await this.db.valueQueryAsync(`SELECT COUNT(*) FROM content_cache`);
-    ztoolkit.log(`[VectorStore] clearAll() starting: embeddings=${beforeEmbeddings}, index_status=${beforeIndex}, content_cache=${beforeCache}`);
+    const beforeEmbeddings = await this.db.valueQueryAsync(
+      `SELECT COUNT(*) FROM embeddings`,
+    );
+    const beforeIndex = await this.db.valueQueryAsync(
+      `SELECT COUNT(*) FROM index_status`,
+    );
+    const beforeCache = await this.db.valueQueryAsync(
+      `SELECT COUNT(*) FROM content_cache`,
+    );
+    ztoolkit.log(
+      `[VectorStore] clearAll() starting: embeddings=${beforeEmbeddings}, index_status=${beforeIndex}, content_cache=${beforeCache}`,
+    );
 
     // Execute DELETE statements directly
     await this.db.queryAsync(`DELETE FROM embeddings`);
@@ -1216,11 +1505,21 @@ export class VectorStore {
     await this.db.queryAsync(`DELETE FROM content_cache`);
 
     // Verify deletion
-    const afterEmbeddings = await this.db.valueQueryAsync(`SELECT COUNT(*) FROM embeddings`);
-    const afterF32 = await this.db.valueQueryAsync(`SELECT COUNT(*) FROM vectors_f32`);
-    const afterIndex = await this.db.valueQueryAsync(`SELECT COUNT(*) FROM index_status`);
-    const afterCache = await this.db.valueQueryAsync(`SELECT COUNT(*) FROM content_cache`);
-    ztoolkit.log(`[VectorStore] clearAll() completed: embeddings=${afterEmbeddings}, vectors_f32=${afterF32}, index_status=${afterIndex}, content_cache=${afterCache}`);
+    const afterEmbeddings = await this.db.valueQueryAsync(
+      `SELECT COUNT(*) FROM embeddings`,
+    );
+    const afterF32 = await this.db.valueQueryAsync(
+      `SELECT COUNT(*) FROM vectors_f32`,
+    );
+    const afterIndex = await this.db.valueQueryAsync(
+      `SELECT COUNT(*) FROM index_status`,
+    );
+    const afterCache = await this.db.valueQueryAsync(
+      `SELECT COUNT(*) FROM content_cache`,
+    );
+    ztoolkit.log(
+      `[VectorStore] clearAll() completed: embeddings=${afterEmbeddings}, vectors_f32=${afterF32}, index_status=${afterIndex}, content_cache=${afterCache}`,
+    );
 
     this.vectorCache.clear();
 
@@ -1230,7 +1529,10 @@ export class VectorStore {
       await this.db.queryAsync(`VACUUM`);
       ztoolkit.log(`[VectorStore] VACUUM completed`);
     } catch (vacuumError) {
-      ztoolkit.log(`[VectorStore] VACUUM failed (non-critical): ${vacuumError}`, 'warn');
+      ztoolkit.log(
+        `[VectorStore] VACUUM failed (non-critical): ${vacuumError}`,
+        "warn",
+      );
     }
   }
 
@@ -1240,55 +1542,65 @@ export class VectorStore {
   async getStats(): Promise<VectorStoreStats> {
     await this.ensureInitialized();
 
-    ztoolkit.log(`[VectorStore] getStats() called: instanceId=${this.instanceId}, dbPath=${this.dbPath}`);
+    ztoolkit.log(
+      `[VectorStore] getStats() called: instanceId=${this.instanceId}, dbPath=${this.dbPath}`,
+    );
 
     const total = await this.db.valueQueryAsync(
-      `SELECT COUNT(*) FROM embeddings`
+      `SELECT COUNT(*) FROM embeddings`,
     );
     const items = await this.db.valueQueryAsync(
-      `SELECT COUNT(DISTINCT item_key) FROM embeddings`
+      `SELECT COUNT(DISTINCT item_key) FROM embeddings`,
     );
     const zh = await this.db.valueQueryAsync(
-      `SELECT COUNT(*) FROM embeddings WHERE language = 'zh'`
+      `SELECT COUNT(*) FROM embeddings WHERE language = 'zh'`,
     );
     const en = await this.db.valueQueryAsync(
-      `SELECT COUNT(*) FROM embeddings WHERE language = 'en'`
+      `SELECT COUNT(*) FROM embeddings WHERE language = 'en'`,
     );
 
     // Content cache stats
     const cachedItems = await this.db.valueQueryAsync(
-      `SELECT COUNT(*) FROM content_cache`
+      `SELECT COUNT(*) FROM content_cache`,
     );
     const cachedSize = await this.db.valueQueryAsync(
-      `SELECT COALESCE(SUM(LENGTH(full_content)), 0) FROM content_cache`
+      `SELECT COALESCE(SUM(LENGTH(full_content)), 0) FROM content_cache`,
     );
 
     // Get stored dimensions (from first vector)
     let storedDimensions: number | undefined;
-    const dimsRow = await this.db.queryAsync(`SELECT dimensions FROM embeddings LIMIT 1`);
+    const dimsRow = await this.db.queryAsync(
+      `SELECT dimensions FROM embeddings LIMIT 1`,
+    );
     if (dimsRow && dimsRow.length > 0) {
       storedDimensions = dimsRow[0].dimensions;
     }
 
     // Int8 migration status
     const int8Count = await this.db.valueQueryAsync(
-      `SELECT COUNT(*) FROM embeddings WHERE vector_int8 IS NOT NULL`
+      `SELECT COUNT(*) FROM embeddings WHERE vector_int8 IS NOT NULL`,
     );
-    const int8MigrationStatus = total > 0 ? {
-      migrated: int8Count || 0,
-      total: total || 0,
-      percent: Math.round(((int8Count || 0) / total) * 100)
-    } : undefined;
+    const int8MigrationStatus =
+      total > 0
+        ? {
+            migrated: int8Count || 0,
+            total: total || 0,
+            percent: Math.round(((int8Count || 0) / total) * 100),
+          }
+        : undefined;
 
     // Float32 table migration status
     const f32Count = await this.db.valueQueryAsync(
-      `SELECT COUNT(*) FROM vectors_f32`
+      `SELECT COUNT(*) FROM vectors_f32`,
     );
     const f32Unmigrated = await this.db.valueQueryAsync(
-      `SELECT COUNT(*) FROM embeddings WHERE LENGTH(vector) > 0`
+      `SELECT COUNT(*) FROM embeddings WHERE LENGTH(vector) > 0`,
     );
     if (f32Unmigrated > 0) {
-      ztoolkit.log(`[VectorStore] Stats: ${f32Unmigrated} vectors still in embeddings.vector (not yet migrated to vectors_f32)`, 'warn');
+      ztoolkit.log(
+        `[VectorStore] Stats: ${f32Unmigrated} vectors still in embeddings.vector (not yet migrated to vectors_f32)`,
+        "warn",
+      );
     }
 
     // Get database file size
@@ -1305,10 +1617,13 @@ export class VectorStore {
 
     // index_status table count (may differ from embeddings DISTINCT count)
     const indexStatusCount = await this.db.valueQueryAsync(
-      `SELECT COUNT(*) FROM index_status`
+      `SELECT COUNT(*) FROM index_status`,
     );
     if (indexStatusCount !== items) {
-      ztoolkit.log(`[VectorStore] Stats mismatch: index_status=${indexStatusCount}, embeddings(DISTINCT item_key)=${items}. Some items may have index_status but no embeddings.`, 'warn');
+      ztoolkit.log(
+        `[VectorStore] Stats mismatch: index_status=${indexStatusCount}, embeddings(DISTINCT item_key)=${items}. Some items may have index_status but no embeddings.`,
+        "warn",
+      );
     }
 
     return {
@@ -1321,7 +1636,7 @@ export class VectorStore {
       storedDimensions,
       int8MigrationStatus,
       dbSizeBytes,
-      dbPath: this.dbPath
+      dbPath: this.dbPath,
     };
   }
 
@@ -1329,22 +1644,30 @@ export class VectorStore {
    * Get vectors for a specific item (for find_similar).
    * Reads float32 vectors from vectors_f32 table.
    */
-  async getItemVectors(itemKey: string): Promise<Array<{
-    chunkId: number;
-    vector: Float32Array;
-    language: string;
-  }>> {
+  async getItemVectors(itemKey: string): Promise<
+    Array<{
+      chunkId: number;
+      vector: Float32Array;
+      language: string;
+    }>
+  > {
     await this.ensureInitialized();
 
     // Get dimensions and language from embeddings table
-    const metaRows = await this.db.queryAsync(`SELECT chunk_id, language, dimensions FROM embeddings WHERE item_key = ? ORDER BY chunk_id`, [itemKey]);
+    const metaRows = await this.db.queryAsync(
+      `SELECT chunk_id, language, dimensions FROM embeddings WHERE item_key = ? ORDER BY chunk_id`,
+      [itemKey],
+    );
 
     if (!metaRows || metaRows.length === 0) {
       return [];
     }
 
     // Get float32 vectors from vectors_f32 table
-    const vecRows = await this.db.queryAsync(`SELECT chunk_id, vector FROM vectors_f32 WHERE item_key = ? ORDER BY chunk_id`, [itemKey]);
+    const vecRows = await this.db.queryAsync(
+      `SELECT chunk_id, vector FROM vectors_f32 WHERE item_key = ? ORDER BY chunk_id`,
+      [itemKey],
+    );
 
     // Build a map of chunk_id -> vector blob for fast lookup
     const vecMap = new Map<number, any>();
@@ -1354,14 +1677,18 @@ export class VectorStore {
       }
     }
 
-    const results: Array<{ chunkId: number; vector: Float32Array; language: string }> = [];
+    const results: Array<{
+      chunkId: number;
+      vector: Float32Array;
+      language: string;
+    }> = [];
     for (const row of metaRows) {
       const vecBlob = vecMap.get(row.chunk_id);
       if (vecBlob) {
         results.push({
           chunkId: row.chunk_id,
           vector: this.bufferToFloat32Array(vecBlob, row.dimensions),
-          language: row.language
+          language: row.language,
         });
       }
     }
@@ -1372,20 +1699,31 @@ export class VectorStore {
   /**
    * Get chunk texts for items (without vectors, for filling keyword search results)
    */
-  async getItemChunks(itemKeys: string[]): Promise<Map<string, Array<{
-    chunkId: number;
-    text: string;
-    language: string;
-  }>>> {
+  async getItemChunks(itemKeys: string[]): Promise<
+    Map<
+      string,
+      Array<{
+        chunkId: number;
+        text: string;
+        language: string;
+      }>
+    >
+  > {
     await this.ensureInitialized();
 
-    const result = new Map<string, Array<{ chunkId: number; text: string; language: string }>>();
+    const result = new Map<
+      string,
+      Array<{ chunkId: number; text: string; language: string }>
+    >();
 
     if (itemKeys.length === 0) return result;
 
-    const placeholders = itemKeys.map(() => '?').join(',');
+    const placeholders = itemKeys.map(() => "?").join(",");
     // IMPORTANT: Single-line query to avoid Zotero queryAsync bug with multi-line SQL
-    const rows = await this.db.queryAsync(`SELECT item_key, chunk_id, chunk_text, language FROM embeddings WHERE item_key IN (${placeholders}) ORDER BY item_key, chunk_id`, itemKeys);
+    const rows = await this.db.queryAsync(
+      `SELECT item_key, chunk_id, chunk_text, language FROM embeddings WHERE item_key IN (${placeholders}) ORDER BY item_key, chunk_id`,
+      itemKeys,
+    );
 
     if (!rows || rows.length === 0) {
       return result;
@@ -1395,8 +1733,8 @@ export class VectorStore {
       const chunks = result.get(row.item_key) || [];
       chunks.push({
         chunkId: row.chunk_id,
-        text: row.chunk_text || '',
-        language: row.language
+        text: row.chunk_text || "",
+        language: row.language,
       });
       result.set(row.item_key, chunks);
     }
@@ -1416,10 +1754,9 @@ export class VectorStore {
    * Convert Float32Array to buffer for storage
    */
   private float32ArrayToBuffer(arr: Float32Array): Uint8Array {
-    return new Uint8Array(arr.buffer.slice(
-      arr.byteOffset,
-      arr.byteOffset + arr.byteLength
-    ));
+    return new Uint8Array(
+      arr.buffer.slice(arr.byteOffset, arr.byteOffset + arr.byteLength),
+    );
   }
 
   /**
@@ -1429,10 +1766,10 @@ export class VectorStore {
     // Convert signed Int8 to unsigned bytes, then to base64
     const uint8 = new Uint8Array(arr.length);
     for (let i = 0; i < arr.length; i++) {
-      uint8[i] = arr[i] & 0xFF;
+      uint8[i] = arr[i] & 0xff;
     }
     // Use btoa with binary string
-    let binary = '';
+    let binary = "";
     for (let i = 0; i < uint8.length; i++) {
       binary += String.fromCharCode(uint8[i]);
     }
@@ -1458,7 +1795,7 @@ export class VectorStore {
    */
   private bufferToInt8Array(buffer: any, dimensions: number): Int8Array {
     // Handle base64 string format (new storage format)
-    if (typeof buffer === 'string') {
+    if (typeof buffer === "string") {
       return this.base64ToInt8Array(buffer, dimensions);
     }
 
@@ -1469,7 +1806,7 @@ export class VectorStore {
       uint8Array = buffer;
     } else if (buffer instanceof ArrayBuffer) {
       uint8Array = new Uint8Array(buffer);
-    } else if (typeof buffer === 'object' && buffer.buffer) {
+    } else if (typeof buffer === "object" && buffer.buffer) {
       uint8Array = new Uint8Array(buffer.buffer);
     } else {
       uint8Array = new Uint8Array(buffer);
@@ -1490,7 +1827,7 @@ export class VectorStore {
       uint8Array = buffer;
     } else if (buffer instanceof ArrayBuffer) {
       uint8Array = new Uint8Array(buffer);
-    } else if (typeof buffer === 'object' && buffer.buffer) {
+    } else if (typeof buffer === "object" && buffer.buffer) {
       uint8Array = new Uint8Array(buffer.buffer);
     } else {
       // Try to convert from array-like object
@@ -1513,7 +1850,10 @@ export class VectorStore {
    * Scale is chosen so that max(|float_val|) maps to 127
    * @returns { quantized: Int8Array, scale: number }
    */
-  private quantizeToInt8(vector: Float32Array): { quantized: Int8Array; scale: number } {
+  private quantizeToInt8(vector: Float32Array): {
+    quantized: Int8Array;
+    scale: number;
+  } {
     const len = vector.length;
 
     // Find max absolute value for scaling
@@ -1567,7 +1907,10 @@ export class VectorStore {
   /**
    * Dequantize Int8Array back to Float32Array
    */
-  private dequantizeFromInt8(quantized: Int8Array, scale: number): Float32Array {
+  private dequantizeFromInt8(
+    quantized: Int8Array,
+    scale: number,
+  ): Float32Array {
     const len = quantized.length;
     const vector = new Float32Array(len);
 
@@ -1588,7 +1931,7 @@ export class VectorStore {
     queryInt8: Int8Array,
     _queryScale: number,
     storedInt8: Int8Array,
-    _storedScale: number
+    _storedScale: number,
   ): number {
     const len = queryInt8.length;
     let dotProduct = 0;
@@ -1600,14 +1943,50 @@ export class VectorStore {
     let i = 0;
 
     for (; i < unrollEnd; i += 8) {
-      const a0 = queryInt8[i], a1 = queryInt8[i+1], a2 = queryInt8[i+2], a3 = queryInt8[i+3];
-      const a4 = queryInt8[i+4], a5 = queryInt8[i+5], a6 = queryInt8[i+6], a7 = queryInt8[i+7];
-      const b0 = storedInt8[i], b1 = storedInt8[i+1], b2 = storedInt8[i+2], b3 = storedInt8[i+3];
-      const b4 = storedInt8[i+4], b5 = storedInt8[i+5], b6 = storedInt8[i+6], b7 = storedInt8[i+7];
+      const a0 = queryInt8[i],
+        a1 = queryInt8[i + 1],
+        a2 = queryInt8[i + 2],
+        a3 = queryInt8[i + 3];
+      const a4 = queryInt8[i + 4],
+        a5 = queryInt8[i + 5],
+        a6 = queryInt8[i + 6],
+        a7 = queryInt8[i + 7];
+      const b0 = storedInt8[i],
+        b1 = storedInt8[i + 1],
+        b2 = storedInt8[i + 2],
+        b3 = storedInt8[i + 3];
+      const b4 = storedInt8[i + 4],
+        b5 = storedInt8[i + 5],
+        b6 = storedInt8[i + 6],
+        b7 = storedInt8[i + 7];
 
-      dotProduct += a0*b0 + a1*b1 + a2*b2 + a3*b3 + a4*b4 + a5*b5 + a6*b6 + a7*b7;
-      normA += a0*a0 + a1*a1 + a2*a2 + a3*a3 + a4*a4 + a5*a5 + a6*a6 + a7*a7;
-      normB += b0*b0 + b1*b1 + b2*b2 + b3*b3 + b4*b4 + b5*b5 + b6*b6 + b7*b7;
+      dotProduct +=
+        a0 * b0 +
+        a1 * b1 +
+        a2 * b2 +
+        a3 * b3 +
+        a4 * b4 +
+        a5 * b5 +
+        a6 * b6 +
+        a7 * b7;
+      normA +=
+        a0 * a0 +
+        a1 * a1 +
+        a2 * a2 +
+        a3 * a3 +
+        a4 * a4 +
+        a5 * a5 +
+        a6 * a6 +
+        a7 * a7;
+      normB +=
+        b0 * b0 +
+        b1 * b1 +
+        b2 * b2 +
+        b3 * b3 +
+        b4 * b4 +
+        b5 * b5 +
+        b6 * b6 +
+        b7 * b7;
     }
 
     // Handle remaining elements
@@ -1634,9 +2013,9 @@ export class VectorStore {
    */
   private cosineSimilarityInt8WithNorm(
     queryInt8: Int8Array,
-    _queryNorm: number,  // Not used - we compute Int8 norm directly
+    _queryNorm: number, // Not used - we compute Int8 norm directly
     storedInt8: Int8Array,
-    _storedNorm: number  // Not used - we compute Int8 norm directly
+    _storedNorm: number, // Not used - we compute Int8 norm directly
   ): number {
     const len = queryInt8.length;
     let dotProduct = 0;
@@ -1648,14 +2027,50 @@ export class VectorStore {
     let i = 0;
 
     for (; i < unrollEnd; i += 8) {
-      const a0 = queryInt8[i], a1 = queryInt8[i+1], a2 = queryInt8[i+2], a3 = queryInt8[i+3];
-      const a4 = queryInt8[i+4], a5 = queryInt8[i+5], a6 = queryInt8[i+6], a7 = queryInt8[i+7];
-      const b0 = storedInt8[i], b1 = storedInt8[i+1], b2 = storedInt8[i+2], b3 = storedInt8[i+3];
-      const b4 = storedInt8[i+4], b5 = storedInt8[i+5], b6 = storedInt8[i+6], b7 = storedInt8[i+7];
+      const a0 = queryInt8[i],
+        a1 = queryInt8[i + 1],
+        a2 = queryInt8[i + 2],
+        a3 = queryInt8[i + 3];
+      const a4 = queryInt8[i + 4],
+        a5 = queryInt8[i + 5],
+        a6 = queryInt8[i + 6],
+        a7 = queryInt8[i + 7];
+      const b0 = storedInt8[i],
+        b1 = storedInt8[i + 1],
+        b2 = storedInt8[i + 2],
+        b3 = storedInt8[i + 3];
+      const b4 = storedInt8[i + 4],
+        b5 = storedInt8[i + 5],
+        b6 = storedInt8[i + 6],
+        b7 = storedInt8[i + 7];
 
-      dotProduct += a0*b0 + a1*b1 + a2*b2 + a3*b3 + a4*b4 + a5*b5 + a6*b6 + a7*b7;
-      normA += a0*a0 + a1*a1 + a2*a2 + a3*a3 + a4*a4 + a5*a5 + a6*a6 + a7*a7;
-      normB += b0*b0 + b1*b1 + b2*b2 + b3*b3 + b4*b4 + b5*b5 + b6*b6 + b7*b7;
+      dotProduct +=
+        a0 * b0 +
+        a1 * b1 +
+        a2 * b2 +
+        a3 * b3 +
+        a4 * b4 +
+        a5 * b5 +
+        a6 * b6 +
+        a7 * b7;
+      normA +=
+        a0 * a0 +
+        a1 * a1 +
+        a2 * a2 +
+        a3 * a3 +
+        a4 * a4 +
+        a5 * a5 +
+        a6 * a6 +
+        a7 * a7;
+      normB +=
+        b0 * b0 +
+        b1 * b1 +
+        b2 * b2 +
+        b3 * b3 +
+        b4 * b4 +
+        b5 * b5 +
+        b6 * b6 +
+        b7 * b7;
     }
 
     // Handle remaining elements
@@ -1694,13 +2109,20 @@ export class VectorStore {
   /**
    * Convert Int8 buffer back to Float32Array
    */
-  private int8BufferToFloat32Array(buffer: Uint8Array, dimensions: number): Float32Array {
+  private int8BufferToFloat32Array(
+    buffer: Uint8Array,
+    dimensions: number,
+  ): Float32Array {
     // Read scale from first 4 bytes
     const scaleView = new DataView(buffer.buffer, buffer.byteOffset, 4);
     const scale = scaleView.getFloat32(0, true);
 
     // Read Int8 values
-    const quantized = new Int8Array(buffer.buffer, buffer.byteOffset + 4, dimensions);
+    const quantized = new Int8Array(
+      buffer.buffer,
+      buffer.byteOffset + 4,
+      dimensions,
+    );
 
     return this.dequantizeFromInt8(quantized, scale);
   }
@@ -1724,14 +2146,50 @@ export class VectorStore {
     let i = 0;
 
     for (; i < unrollEnd; i += 8) {
-      const a0 = a[i], a1 = a[i+1], a2 = a[i+2], a3 = a[i+3];
-      const a4 = a[i+4], a5 = a[i+5], a6 = a[i+6], a7 = a[i+7];
-      const b0 = b[i], b1 = b[i+1], b2 = b[i+2], b3 = b[i+3];
-      const b4 = b[i+4], b5 = b[i+5], b6 = b[i+6], b7 = b[i+7];
+      const a0 = a[i],
+        a1 = a[i + 1],
+        a2 = a[i + 2],
+        a3 = a[i + 3];
+      const a4 = a[i + 4],
+        a5 = a[i + 5],
+        a6 = a[i + 6],
+        a7 = a[i + 7];
+      const b0 = b[i],
+        b1 = b[i + 1],
+        b2 = b[i + 2],
+        b3 = b[i + 3];
+      const b4 = b[i + 4],
+        b5 = b[i + 5],
+        b6 = b[i + 6],
+        b7 = b[i + 7];
 
-      dotProduct += a0*b0 + a1*b1 + a2*b2 + a3*b3 + a4*b4 + a5*b5 + a6*b6 + a7*b7;
-      normA += a0*a0 + a1*a1 + a2*a2 + a3*a3 + a4*a4 + a5*a5 + a6*a6 + a7*a7;
-      normB += b0*b0 + b1*b1 + b2*b2 + b3*b3 + b4*b4 + b5*b5 + b6*b6 + b7*b7;
+      dotProduct +=
+        a0 * b0 +
+        a1 * b1 +
+        a2 * b2 +
+        a3 * b3 +
+        a4 * b4 +
+        a5 * b5 +
+        a6 * b6 +
+        a7 * b7;
+      normA +=
+        a0 * a0 +
+        a1 * a1 +
+        a2 * a2 +
+        a3 * a3 +
+        a4 * a4 +
+        a5 * a5 +
+        a6 * a6 +
+        a7 * a7;
+      normB +=
+        b0 * b0 +
+        b1 * b1 +
+        b2 * b2 +
+        b3 * b3 +
+        b4 * b4 +
+        b5 * b5 +
+        b6 * b6 +
+        b7 * b7;
     }
 
     // Handle remaining elements
@@ -1751,7 +2209,10 @@ export class VectorStore {
    * @param normalizedQuery - Pre-normalized query vector (norm = 1)
    * @param storedVector - Stored vector (may not be normalized)
    */
-  private cosineSimilarityWithNormalizedQuery(normalizedQuery: Float32Array, storedVector: Float32Array): number {
+  private cosineSimilarityWithNormalizedQuery(
+    normalizedQuery: Float32Array,
+    storedVector: Float32Array,
+  ): number {
     const len = normalizedQuery.length;
     let dotProduct = 0;
     let normB = 0;
@@ -1761,13 +2222,41 @@ export class VectorStore {
     let i = 0;
 
     for (; i < unrollEnd; i += 8) {
-      const a0 = normalizedQuery[i], a1 = normalizedQuery[i+1], a2 = normalizedQuery[i+2], a3 = normalizedQuery[i+3];
-      const a4 = normalizedQuery[i+4], a5 = normalizedQuery[i+5], a6 = normalizedQuery[i+6], a7 = normalizedQuery[i+7];
-      const b0 = storedVector[i], b1 = storedVector[i+1], b2 = storedVector[i+2], b3 = storedVector[i+3];
-      const b4 = storedVector[i+4], b5 = storedVector[i+5], b6 = storedVector[i+6], b7 = storedVector[i+7];
+      const a0 = normalizedQuery[i],
+        a1 = normalizedQuery[i + 1],
+        a2 = normalizedQuery[i + 2],
+        a3 = normalizedQuery[i + 3];
+      const a4 = normalizedQuery[i + 4],
+        a5 = normalizedQuery[i + 5],
+        a6 = normalizedQuery[i + 6],
+        a7 = normalizedQuery[i + 7];
+      const b0 = storedVector[i],
+        b1 = storedVector[i + 1],
+        b2 = storedVector[i + 2],
+        b3 = storedVector[i + 3];
+      const b4 = storedVector[i + 4],
+        b5 = storedVector[i + 5],
+        b6 = storedVector[i + 6],
+        b7 = storedVector[i + 7];
 
-      dotProduct += a0*b0 + a1*b1 + a2*b2 + a3*b3 + a4*b4 + a5*b5 + a6*b6 + a7*b7;
-      normB += b0*b0 + b1*b1 + b2*b2 + b3*b3 + b4*b4 + b5*b5 + b6*b6 + b7*b7;
+      dotProduct +=
+        a0 * b0 +
+        a1 * b1 +
+        a2 * b2 +
+        a3 * b3 +
+        a4 * b4 +
+        a5 * b5 +
+        a6 * b6 +
+        a7 * b7;
+      normB +=
+        b0 * b0 +
+        b1 * b1 +
+        b2 * b2 +
+        b3 * b3 +
+        b4 * b4 +
+        b5 * b5 +
+        b6 * b6 +
+        b7 * b7;
     }
 
     // Handle remaining elements
@@ -1784,7 +2273,10 @@ export class VectorStore {
    * Pre-compute query vector norm for batch comparisons
    * Returns: { normalizedQuery, queryNorm }
    */
-  private prepareQueryVector(queryVector: Float32Array): { normalized: Float32Array; norm: number } {
+  private prepareQueryVector(queryVector: Float32Array): {
+    normalized: Float32Array;
+    norm: number;
+  } {
     const len = queryVector.length;
     let normSq = 0;
 
@@ -1825,21 +2317,29 @@ export class VectorStore {
    * Call this to enable optimized search on existing indexed data
    * @returns Number of vectors migrated
    */
-  async migrateToInt8(onProgress?: (processed: number, total: number) => void): Promise<number> {
+  async migrateToInt8(
+    onProgress?: (processed: number, total: number) => void,
+  ): Promise<number> {
     await this.ensureInitialized();
 
     // Count vectors needing migration
-    const totalCount = await this.db.valueQueryAsync(`SELECT COUNT(*) FROM embeddings WHERE vector_int8 IS NULL`);
+    const totalCount = await this.db.valueQueryAsync(
+      `SELECT COUNT(*) FROM embeddings WHERE vector_int8 IS NULL`,
+    );
 
     if (!totalCount || totalCount === 0) {
-      ztoolkit.log('[VectorStore] No vectors need Int8 migration');
+      ztoolkit.log("[VectorStore] No vectors need Int8 migration");
       return 0;
     }
 
-    ztoolkit.log(`[VectorStore] Migrating ${totalCount} vectors to Int8 format...`);
+    ztoolkit.log(
+      `[VectorStore] Migrating ${totalCount} vectors to Int8 format...`,
+    );
 
     // Self-test: verify base64 encoding/decoding works correctly
-    const testVector = new Float32Array([0.1, -0.5, 0.9, -0.1, 0.0, 0.123, -0.999, 0.5]);
+    const testVector = new Float32Array([
+      0.1, -0.5, 0.9, -0.1, 0.0, 0.123, -0.999, 0.5,
+    ]);
     const testQuantized = this.quantizeWithNorm(testVector);
     const testBase64 = this.int8ArrayToBase64(testQuantized.int8Data);
     const testDecoded = this.base64ToInt8Array(testBase64, testVector.length);
@@ -1847,11 +2347,17 @@ export class VectorStore {
     for (let i = 0; i < testVector.length; i++) {
       if (testQuantized.int8Data[i] !== testDecoded[i]) {
         testMatch = false;
-        ztoolkit.log(`[VectorStore] SELF-TEST FAILED at index ${i}: original=${testQuantized.int8Data[i]}, decoded=${testDecoded[i]}`);
+        ztoolkit.log(
+          `[VectorStore] SELF-TEST FAILED at index ${i}: original=${testQuantized.int8Data[i]}, decoded=${testDecoded[i]}`,
+        );
       }
     }
-    ztoolkit.log(`[VectorStore] Base64 self-test: ${testMatch ? 'PASSED' : 'FAILED'}`);
-    ztoolkit.log(`[VectorStore] Test data: original=[${Array.from(testQuantized.int8Data)}], decoded=[${Array.from(testDecoded)}], base64Len=${testBase64.length}`);
+    ztoolkit.log(
+      `[VectorStore] Base64 self-test: ${testMatch ? "PASSED" : "FAILED"}`,
+    );
+    ztoolkit.log(
+      `[VectorStore] Test data: original=[${Array.from(testQuantized.int8Data)}], decoded=[${Array.from(testDecoded)}], base64Len=${testBase64.length}`,
+    );
 
     const BATCH_SIZE = 100; // Smaller batch size for migration
     let processed = 0;
@@ -1859,7 +2365,10 @@ export class VectorStore {
 
     while (processed < totalCount) {
       // Fetch batch of embeddings without Int8 data
-      const rows = await this.db.queryAsync(`SELECT e.id, e.item_key, e.chunk_id, e.dimensions FROM embeddings e WHERE e.vector_int8 IS NULL LIMIT ?`, [BATCH_SIZE]);
+      const rows = await this.db.queryAsync(
+        `SELECT e.id, e.item_key, e.chunk_id, e.dimensions FROM embeddings e WHERE e.vector_int8 IS NULL LIMIT ?`,
+        [BATCH_SIZE],
+      );
 
       if (!rows || rows.length === 0) break;
 
@@ -1867,15 +2376,24 @@ export class VectorStore {
       for (const row of rows) {
         try {
           // Read float32 vector from vectors_f32 table
-          const f32Row = await this.db.queryAsync(`SELECT vector FROM vectors_f32 WHERE item_key = ? AND chunk_id = ?`, [row.item_key, row.chunk_id]);
+          const f32Row = await this.db.queryAsync(
+            `SELECT vector FROM vectors_f32 WHERE item_key = ? AND chunk_id = ?`,
+            [row.item_key, row.chunk_id],
+          );
 
           if (!f32Row || f32Row.length === 0) {
-            ztoolkit.log(`[VectorStore] No float32 vector found for item_key=${row.item_key}, chunk_id=${row.chunk_id}, skipping`, 'warn');
+            ztoolkit.log(
+              `[VectorStore] No float32 vector found for item_key=${row.item_key}, chunk_id=${row.chunk_id}, skipping`,
+              "warn",
+            );
             processed++;
             continue;
           }
 
-          const vector = this.bufferToFloat32Array(f32Row[0].vector, row.dimensions);
+          const vector = this.bufferToFloat32Array(
+            f32Row[0].vector,
+            row.dimensions,
+          );
           const quantized = this.quantizeWithNorm(vector);
 
           // Encode Int8 data as base64 string for reliable SQLite storage
@@ -1886,22 +2404,31 @@ export class VectorStore {
           if (migrated < 3) {
             const sampleFloat32 = vector.slice(0, 5);
             const sampleInt8 = quantized.int8Data.slice(0, 5);
-            ztoolkit.log(`[VectorStore] Migration sample ${migrated}: id=${row.id}, dims=${row.dimensions}`);
-            ztoolkit.log(`  Float32[0:5]=[${Array.from(sampleFloat32).map(v => v.toFixed(4))}]`);
-            ztoolkit.log(`  Int8[0:5]=[${Array.from(sampleInt8)}], scale=${quantized.scale.toFixed(4)}, norm=${quantized.norm.toFixed(4)}`);
-            ztoolkit.log(`  base64Len=${int8Base64.length}, expected=${Math.ceil(row.dimensions * 4 / 3)}`);
+            ztoolkit.log(
+              `[VectorStore] Migration sample ${migrated}: id=${row.id}, dims=${row.dimensions}`,
+            );
+            ztoolkit.log(
+              `  Float32[0:5]=[${Array.from(sampleFloat32).map((v) => v.toFixed(4))}]`,
+            );
+            ztoolkit.log(
+              `  Int8[0:5]=[${Array.from(sampleInt8)}], scale=${quantized.scale.toFixed(4)}, norm=${quantized.norm.toFixed(4)}`,
+            );
+            ztoolkit.log(
+              `  base64Len=${int8Base64.length}, expected=${Math.ceil((row.dimensions * 4) / 3)}`,
+            );
           }
 
-          await this.db.queryAsync(`UPDATE embeddings SET vector_int8 = ?, vector_scale = ?, vector_norm = ? WHERE id = ?`, [
-            int8Base64,
-            quantized.scale,
-            quantized.norm,
-            row.id
-          ]);
+          await this.db.queryAsync(
+            `UPDATE embeddings SET vector_int8 = ?, vector_scale = ?, vector_norm = ? WHERE id = ?`,
+            [int8Base64, quantized.scale, quantized.norm, row.id],
+          );
 
           migrated++;
         } catch (e) {
-          ztoolkit.log(`[VectorStore] Failed to migrate vector id=${row.id}: ${e}`, 'warn');
+          ztoolkit.log(
+            `[VectorStore] Failed to migrate vector id=${row.id}: ${e}`,
+            "warn",
+          );
         }
         processed++;
       }
@@ -1909,27 +2436,42 @@ export class VectorStore {
       onProgress?.(processed, totalCount);
 
       if (migrated % 5000 === 0 && migrated > 0) {
-        ztoolkit.log(`[VectorStore] Migration progress: ${migrated}/${totalCount} migrated`);
+        ztoolkit.log(
+          `[VectorStore] Migration progress: ${migrated}/${totalCount} migrated`,
+        );
       }
 
       // Small delay to prevent blocking
-      await new Promise(resolve => setTimeout(resolve, 10));
+      await new Promise((resolve) => setTimeout(resolve, 10));
     }
 
-    ztoolkit.log(`[VectorStore] Migration completed: ${migrated} vectors converted to Int8`);
+    ztoolkit.log(
+      `[VectorStore] Migration completed: ${migrated} vectors converted to Int8`,
+    );
 
     // Verification: read back a few vectors and verify the Int8 data
     ztoolkit.log(`[VectorStore] Verifying migrated data...`);
-    const verifyRows = await this.db.queryAsync(`SELECT e.id, e.item_key, e.chunk_id, e.vector_int8, e.dimensions, e.vector_scale, e.vector_norm FROM embeddings e WHERE e.vector_int8 IS NOT NULL LIMIT 3`);
+    const verifyRows = await this.db.queryAsync(
+      `SELECT e.id, e.item_key, e.chunk_id, e.vector_int8, e.dimensions, e.vector_scale, e.vector_norm FROM embeddings e WHERE e.vector_int8 IS NOT NULL LIMIT 3`,
+    );
     if (verifyRows && verifyRows.length > 0) {
       for (let i = 0; i < verifyRows.length; i++) {
         const vRow = verifyRows[i];
-        const storedInt8 = this.bufferToInt8Array(vRow.vector_int8, vRow.dimensions);
+        const storedInt8 = this.bufferToInt8Array(
+          vRow.vector_int8,
+          vRow.dimensions,
+        );
 
         // Load original float32 from vectors_f32 for comparison
-        const origF32Row = await this.db.queryAsync(`SELECT vector FROM vectors_f32 WHERE item_key = ? AND chunk_id = ?`, [vRow.item_key, vRow.chunk_id]);
+        const origF32Row = await this.db.queryAsync(
+          `SELECT vector FROM vectors_f32 WHERE item_key = ? AND chunk_id = ?`,
+          [vRow.item_key, vRow.chunk_id],
+        );
         if (origF32Row && origF32Row.length > 0) {
-          const originalVector = this.bufferToFloat32Array(origF32Row[0].vector, vRow.dimensions);
+          const originalVector = this.bufferToFloat32Array(
+            origF32Row[0].vector,
+            vRow.dimensions,
+          );
           const reQuantized = this.quantizeWithNorm(originalVector);
 
           // Check if stored Int8 matches re-quantized Int8
@@ -1938,10 +2480,18 @@ export class VectorStore {
             if (storedInt8[j] === reQuantized.int8Data[j]) matchCount++;
           }
 
-          ztoolkit.log(`[VectorStore] Verify ${i}: id=${vRow.id}, dims=${vRow.dimensions}`);
-          ztoolkit.log(`  Stored Int8[0:5]=[${Array.from(storedInt8.slice(0, 5))}]`);
-          ztoolkit.log(`  Expected Int8[0:5]=[${Array.from(reQuantized.int8Data.slice(0, 5))}]`);
-          ztoolkit.log(`  Match: ${matchCount}/${vRow.dimensions} (${(matchCount / vRow.dimensions * 100).toFixed(1)}%)`);
+          ztoolkit.log(
+            `[VectorStore] Verify ${i}: id=${vRow.id}, dims=${vRow.dimensions}`,
+          );
+          ztoolkit.log(
+            `  Stored Int8[0:5]=[${Array.from(storedInt8.slice(0, 5))}]`,
+          );
+          ztoolkit.log(
+            `  Expected Int8[0:5]=[${Array.from(reQuantized.int8Data.slice(0, 5))}]`,
+          );
+          ztoolkit.log(
+            `  Match: ${matchCount}/${vRow.dimensions} (${((matchCount / vRow.dimensions) * 100).toFixed(1)}%)`,
+          );
         }
       }
     }
@@ -1952,17 +2502,25 @@ export class VectorStore {
   /**
    * Check if Int8 migration is needed
    */
-  async needsInt8Migration(): Promise<{ needed: boolean; count: number; total: number }> {
+  async needsInt8Migration(): Promise<{
+    needed: boolean;
+    count: number;
+    total: number;
+  }> {
     await this.ensureInitialized();
 
-    const total = await this.db.valueQueryAsync(`SELECT COUNT(*) FROM embeddings`) || 0;
-    const withInt8 = await this.db.valueQueryAsync(`SELECT COUNT(*) FROM embeddings WHERE vector_int8 IS NOT NULL`) || 0;
+    const total =
+      (await this.db.valueQueryAsync(`SELECT COUNT(*) FROM embeddings`)) || 0;
+    const withInt8 =
+      (await this.db.valueQueryAsync(
+        `SELECT COUNT(*) FROM embeddings WHERE vector_int8 IS NOT NULL`,
+      )) || 0;
     const needsMigration = total - withInt8;
 
     return {
       needed: needsMigration > 0,
       count: needsMigration,
-      total
+      total,
     };
   }
 
@@ -1983,17 +2541,22 @@ export class VectorStore {
     // Close database asynchronously (fire and forget)
     if (db) {
       try {
-        db.closeDatabase().then(() => {
-          ztoolkit.log('[VectorStore] Database closed successfully');
-        }).catch((e: any) => {
-          ztoolkit.log(`[VectorStore] Error closing database: ${e}`, 'warn');
-        });
+        db.closeDatabase()
+          .then(() => {
+            ztoolkit.log("[VectorStore] Database closed successfully");
+          })
+          .catch((e: any) => {
+            ztoolkit.log(`[VectorStore] Error closing database: ${e}`, "warn");
+          });
       } catch (e) {
-        ztoolkit.log(`[VectorStore] Error initiating database close: ${e}`, 'warn');
+        ztoolkit.log(
+          `[VectorStore] Error initiating database close: ${e}`,
+          "warn",
+        );
       }
     }
 
-    ztoolkit.log('[VectorStore] Database references released');
+    ztoolkit.log("[VectorStore] Database references released");
   }
 }
 
@@ -2002,10 +2565,14 @@ let vectorStoreInstance: VectorStore | null = null;
 
 export function getVectorStore(): VectorStore {
   if (!vectorStoreInstance) {
-    ztoolkit.log(`[VectorStore] getVectorStore() creating new singleton instance`);
+    ztoolkit.log(
+      `[VectorStore] getVectorStore() creating new singleton instance`,
+    );
     vectorStoreInstance = new VectorStore();
   } else {
-    ztoolkit.log(`[VectorStore] getVectorStore() returning existing instance, instanceId=${(vectorStoreInstance as any).instanceId}`);
+    ztoolkit.log(
+      `[VectorStore] getVectorStore() returning existing instance, instanceId=${(vectorStoreInstance as any).instanceId}`,
+    );
   }
   return vectorStoreInstance;
 }
@@ -2018,5 +2585,5 @@ export function resetVectorStore(): void {
     vectorStoreInstance.close();
     vectorStoreInstance = null;
   }
-  ztoolkit.log('[VectorStore] Singleton instance reset');
+  ztoolkit.log("[VectorStore] Singleton instance reset");
 }

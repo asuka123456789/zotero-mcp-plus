@@ -7,9 +7,46 @@ import {
 
 declare const expect: Chai.ExpectStatic;
 
-const WRITE_ENABLED_PREF = "extensions.zotero.zotero-mcp-plugin.write.enabled";
+const WRITE_ENABLED_PREF = "extensions.zotero.zotero-mcp-plus.write.enabled";
 
 describe("MCP write operations", function () {
+  before(function () {
+    const dataDir = Zotero.DataDirectory.dir.replace(/\\/g, "/");
+    if (
+      !dataDir.endsWith("/.scaffold/test/data") ||
+      Zotero.Prefs.get(
+        "extensions.zotero.zotero-mcp-plus.test.isolated",
+        true,
+      ) !== true
+    ) {
+      throw new Error(
+        "集成写入测试只允许在 .scaffold/test/data 隔离文库中运行",
+      );
+    }
+  });
+
+  after(async function () {
+    if (
+      !Zotero.DataDirectory.dir
+        .replace(/\\/g, "/")
+        .endsWith("/.scaffold/test/data") ||
+      Zotero.Prefs.get(
+        "extensions.zotero.zotero-mcp-plus.test.isolated",
+        true,
+      ) !== true
+    )
+      return;
+    const tests = this.test?.parent?.tests || [];
+    await IOUtils.writeUTF8(
+      PathUtils.join(Zotero.DataDirectory.dir, "upstream-writes-result.json"),
+      JSON.stringify({
+        total: tests.length,
+        passed: tests.filter((test) => test.state === "passed").length,
+        failed: tests.filter((test) => test.state === "failed").length,
+      }),
+    );
+  });
+
   it("returns after the database commit when a notifier observer is slow", async function () {
     this.timeout(5000);
 
@@ -43,25 +80,13 @@ describe("MCP write operations", function () {
 
     try {
       const startedAt = Date.now();
-      const response = await server.handleMCPRequest(
-        JSON.stringify({
-          jsonrpc: "2.0",
-          id: 1,
-          method: "tools/call",
-          params: {
-            name: "write_item",
-            arguments: {
-              action: "create",
-              itemType: "journalArticle",
-              fields: { title },
-            },
-          },
-        }),
-      );
+      // 这里仅回归底层 notifier 时序；公开 MCP 的确认与持久任务另由隔离协议测试覆盖。
+      const result = await (server as any).executeLegacyTool("write_item", {
+        action: "create",
+        itemType: "journalArticle",
+        fields: { title },
+      });
       const elapsedMs = Date.now() - startedAt;
-
-      const envelope = JSON.parse(response.body);
-      const result = JSON.parse(envelope.result.content[0].text);
       itemKey = result.data.itemKey;
       const item = await Zotero.Items.getByLibraryAndKeyAsync(
         Zotero.Libraries.userLibraryID,
@@ -146,21 +171,13 @@ describe("MCP write operations", function () {
 
     try {
       const startedAt = Date.now();
-      const response = await server.handleMCPRequest(
-        JSON.stringify({
-          jsonrpc: "2.0",
-          id: 2,
-          method: "tools/call",
-          params: {
-            name: "create_collection",
-            arguments: { name: `MCP notifier test ${Date.now()}` },
-          },
-        }),
+      const result = await (server as any).executeLegacyTool(
+        "create_collection",
+        {
+          name: `MCP notifier test ${Date.now()}`,
+        },
       );
       const elapsedMs = Date.now() - startedAt;
-
-      const envelope = JSON.parse(response.body);
-      const result = JSON.parse(envelope.result.content[0].text);
       collectionKey = result.key;
       const collection = await Zotero.Collections.getByLibraryAndKeyAsync(
         Zotero.Libraries.userLibraryID,

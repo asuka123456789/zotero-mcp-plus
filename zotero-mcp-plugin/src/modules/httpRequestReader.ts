@@ -50,7 +50,11 @@ export interface HttpRequestRead {
   /** False when headers never terminated or the body never reached Content-Length. */
   complete: boolean;
   /** Set when the read stopped early; used for diagnostics. */
-  incompleteReason?: "no-data" | "headers-truncated" | "body-truncated" | "too-large";
+  incompleteReason?:
+    | "no-data"
+    | "headers-truncated"
+    | "body-truncated"
+    | "too-large";
 }
 
 const CR = 0x0d;
@@ -187,7 +191,11 @@ export async function readHttpRequest(
       waitAttempts++;
       if (waitAttempts > maxWaitAttempts) {
         incompleteReason =
-          headerEnd < 0 ? (buffer.length === 0 ? "no-data" : "headers-truncated") : "body-truncated";
+          headerEnd < 0
+            ? buffer.length === 0
+              ? "no-data"
+              : "headers-truncated"
+            : "body-truncated";
         break;
       }
       await sleep(waitMs);
@@ -199,8 +207,7 @@ export async function readHttpRequest(
       chunk = reader.readBytes(Math.min(budget, available));
     } catch {
       // A live socket reporting data but failing to deliver it means EOF.
-      incompleteReason =
-        headerEnd < 0 ? "headers-truncated" : "body-truncated";
+      incompleteReason = headerEnd < 0 ? "headers-truncated" : "body-truncated";
       break;
     }
 
@@ -235,7 +242,8 @@ export async function readHttpRequest(
 
   if (headerEnd < 0) {
     return {
-      headerText: buffer.length > 0 ? decodeUtf8(buffer.slice(0, buffer.length)) : "",
+      headerText:
+        buffer.length > 0 ? decodeUtf8(buffer.slice(0, buffer.length)) : "",
       body: "",
       contentLength: 0,
       bodyBytesRead: 0,
@@ -259,7 +267,9 @@ export async function readHttpRequest(
     totalBytesRead: buffer.length,
     trailingBytes: Math.max(0, buffer.length - bodyEnd),
     complete,
-    incompleteReason: complete ? undefined : incompleteReason ?? "body-truncated",
+    incompleteReason: complete
+      ? undefined
+      : (incompleteReason ?? "body-truncated"),
   };
 }
 

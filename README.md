@@ -1,305 +1,97 @@
-# Zotero MCP - Model Context Protocol Integration for Zotero
+# Zotero MCP Plus
 
-Zotero MCP is an open-source project designed to seamlessly integrate powerful AI capabilities with the leading reference management tool, Zotero, through the Model Context Protocol (MCP). This project consists of two core components: a Zotero plugin and an MCP server, which work together to provide AI assistants (like Claude) with the ability to interact with your local Zotero library.
-_This README is also available in: [:cn: 简体中文](./README-zh.md) | :gb: English._
-[![GitHub](https://img.shields.io/badge/GitHub-zotero--mcp-blue?logo=github)](https://github.com/cookjohn/zotero-mcp)
-[![zotero target version](https://img.shields.io/badge/Zotero-7-green?style=flat-square&logo=zotero&logoColor=CC2936)](https://www.zotero.org)
-[![Node.js](https://img.shields.io/badge/Node.js-18%2B-green)](https://nodejs.org)
-[![TypeScript](https://img.shields.io/badge/TypeScript-5.4-blue)](https://www.typescriptlang.org)
-[![Version](https://img.shields.io/badge/Version-1.6.0-brightgreen)]()
-[![EN doc](https://img.shields.io/badge/Document-English-blue.svg)](README.md)
-[![中文文档](https://img.shields.io/badge/文档-中文-blue.svg)](README-zh.md)
+为 Zotero MCP 增加原生 PDF 识别、持久任务队列、安全重复项治理和文库健康检查。**这是 Zotero MCP 扩展，不是 AI Butler，也不内置新的模型提供方。**
 
----
-## Fork us on Wechat
- | MP | Forum |
-| :--- | :---: |
-| ![Reading PDF](./IMG/MP.jpg) | ![Contact us](./IMG/0320.jpg) |
-## 📚 Project Overview
+版本 `0.1.0`。基于 [cookjohn/zotero-mcp](https://github.com/cookjohn/zotero-mcp) 的 `v1.6.0`，固定基线 commit：`e87f266b45cf26f8756cfa7e0e9d30ebc03b792b`。保留 MIT 许可与上游归属。
 
-The Zotero MCP server is a tool server based on the Model Context Protocol that provides seamless integration with the Zotero reference management system for AI applications like Claude Desktop. Through this server, AI assistants can:
+当前验证平台为 **Windows 11 / Zotero 9.0.6**。不宣称已支持所有 Zotero 7–10 版本。具体测试结果与未验证范围见 [验证记录](docs/VALIDATION.md)。手动安装包以本项目的 [GitHub Releases](https://github.com/asuka123456789/zotero-mcp-plus/releases) 为准，**不提供在线自动更新**。
 
-- 🔍 **Smart Search**: Multi-dimensional library search (title/creator/year/tags/fulltext/semantic) with boolean operators and relevance scoring
-- 📖 **Content Extraction**: Extract PDF full-text, notes, abstracts, webpage snapshots with fine-grained mode control
-- 📝 **Annotation Analysis**: Search and analyze PDF highlights and annotations by color, tags, and keywords
-- 📂 **Collection Browsing**: Browse and search collection hierarchies, retrieve items within collections
-- 🧠 **Semantic Search**: AI-powered concept matching via embedding vectors, discover related literature across languages
-- ✏️ **Write Operations**: Create notes, manage tags, update metadata, create new items and attach PDFs
-- 💾 **Full-text Database**: Access and search cached PDF full-text content
+## 能力
 
-This enables AI assistants to help you with literature reviews, citation management, content analysis, annotation organization, knowledge base management, and more.
+保留 28 个旧工具（包括旧写工具），新增以下 8 个工具：
 
-## 🚀 Project Structure
+| 工具                          | 用途                                                       |
+| ----------------------------- | ---------------------------------------------------------- |
+| `find_standalone_attachments` | 分页查找独立 PDF，报告本地文件状态及可识别性               |
+| `recognize_pdfs`              | 调用 Zotero 原生识别，逐项记录结果，默认只预览             |
+| `task_status`                 | 查询任务及逐项结果，对未知结果进行只读核验                 |
+| `task_list`                   | 分页查询持久任务                                           |
+| `task_control`                | 暂停、取消，以及重新预览确认后的恢复或安全重试             |
+| `find_duplicates`             | 查找候选、显示匹配依据和标识符冲突，不自动合并             |
+| `merge_items`                 | 对满足保全限制的同库、同类型条目执行原生合并               |
+| `library_health`              | 只读检查独立 PDF、文件状态、元数据缺项、重复候选及任务情况 |
 
-This project now features a **unified architecture** with an integrated MCP server:
+### 默认安全边界
 
-- **`zotero-mcp-plugin/`**: A Zotero plugin with **integrated MCP server** that communicates directly with AI clients via Streamable HTTP protocol
-- **`IMG/`**: Screenshots and documentation images
-- **`README.md`** / **`README-zh.md`**: Documentation files
+- 独立插件 ID：`{8c2b53b8-6a58-4fc1-b20f-07612fce0a77}`，实例 `Zotero.ZoteroMCPPlus`。
+- 独立偏好：`extensions.zotero.zotero-mcp-plus`。
+- 默认端点：`http://127.0.0.1:23121/mcp`；仅监听回环，必须提供随机 Bearer token。
+- 文库写入、语义索引与自动索引均默认关闭。不复制原插件的 API key 或模型配置。
+- 独立账本 `zotero-mcp-plus-tasks.sqlite`，独立向量库 `zotero-mcp-plus-vectors.sqlite`。不修改 Zotero 主库 schema。
+- 原版插件及默认 `23120` 端口可保留，不覆盖旧 XPI，也不自动移除旧客户端配置。
+- Zotero 9.0.6 要求非空 HTTPS `update_url`；本地版使用保留域名 `example.invalid` 明确占位，不连接上游更新源，也不提供在线更新。升级须手动安装新 XPI。
+- 采用 MCP `2025-11-25` 的无 session、JSON-only Streamable HTTP。不提供 SSE；GET `/mcp` 返回 405，通知返回 202 空响应。
 
-**Unified Architecture:**
+## 写入流程
+
+预览与执行使用**同一个工具名**，不存在 `prepare`、`execute` 或 `reconcile` 这类独立公开工具。
+
+1. 调用写工具，省略 `dryRun` 或设为 `true`。
+2. 展示返回的目标、差异、阻断项和警告，取得用户对该批操作的明确确认。
+3. 使用完全相同的业务参数再次调用，增加 `dryRun:false`、`confirmationToken` 和唯一 `idempotencyKey`。
+4. 通过 `task_status({taskID})` 查询结果，不能把“已入队”当作“已完成”。
+
+例如，预览 `recognize_pdfs({libraryID:1, attachmentKeys:["ABCDEFGH"]})`；**只有确认后**才补充执行参数。确认令牌有效期为首次消费前 5 分钟。重复提交相同幂等键和参数会返回原任务，不会重复创建任务。
+
+令牌只绑定预览与请求，不能证明操作者是人类。客户端仍须履行上述确认流程。禁写时可以预览，但不能接受新执行请求。
+
+### 重要限制
+
+- 原生识别可能联网并自动重命名附件；预览不能预测识别出的 DOI、标题或成功率。
+- 暂停或取消只阻止后续投递，不能保证已经进入原生队列的操作停止。
+- 重启后只对账，不自动重跑未知尝试。`needs_review` 保留目标预留；仅能确认外部状态已满足时记为 `externally_satisfied`，不冒认本任务执行成功。
+- 首版合并固定为 `preserve_all`：donor 不得持有 PDF 或网页附件（包括回收站子项），否则不给执行令牌；这些附件可以位于 master。其他附件、字段、笔记、标签、集合和关系也需通过前后状态核验。
+- 不提供通用 undo，不物理删除 PDF，不自动清空回收站。插件回滚不会撤销已完成的文库修改。
+- 文件导入仅允许本地明确授权的目录；默认没有授权目录，拒绝 UNC、符号链接及路径逃逸。
+
+## 构建与安装
+
+使用 **Node.js 24**，在 `zotero-mcp-plugin/` 中执行：
+
+```bash
+npm ci --ignore-scripts
+npm run test:unit
+npm run build
 ```
-AI Client ↔ Streamable HTTP ↔ Zotero Plugin (with integrated MCP server)
-```
 
-This eliminates the need for a separate MCP server process, providing a more streamlined and efficient integration.
+本地 XPI 位于 `.scaffold/build/`。在 Zotero 的“工具 → 插件”中选择“从文件安装插件”，选择 Plus 的 XPI；不要覆盖原插件文件。首次安装保持禁写，先完成只读连接检查。
 
----
+在 Plus 设置中复制 Bearer token，并新增独立客户端项：
 
-## 🚀 Quick Start Guide
-
-This guide is intended to help general users quickly configure and use Zotero MCP, enabling your AI assistant to work seamlessly with your Zotero library.
-
-### 1. Installation (For General Users)
-
-**What is Zotero MCP?**
-
-Simply put, Zotero MCP is a bridge connecting your AI client (like Cherry Studio, Gemini CLI, Claude Desktop, etc.) and your local Zotero reference management software. It allows your AI assistant to directly search, query, and cite references from your Zotero library, greatly enhancing academic research and writing efficiency.
-
-**Two-Step Quick Start:**
-
-1.  **Install the Plugin**:
-    *   Go to the project's [Releases Page](https://github.com/cookjohn/zotero-mcp/releases) to download the latest `zotero-mcp-plugin-x.x.x.xpi` file.
-    *   In Zotero, install the `.xpi` file via `Tools -> Add-ons`.
-    *   Restart Zotero.
-
-2.  **Configure the Plugin**:
-    *   In Zotero's `Preferences -> Zotero MCP Plugin` tab, configure your connection settings:
-        - **Enable Server**: Start the integrated MCP server
-        - **Port**: Default is `23120` (you can change this if needed)
-        - **Generate Client Configuration**: Click this button to get configuration for your AI client
-
----
-
-### 2. Connect to AI Clients
-
-**Important**: The Zotero plugin now includes an **integrated MCP server** that uses the Streamable HTTP protocol. No separate server installation is needed.
-
-#### Streamable HTTP Connection
-
-The plugin uses Streamable HTTP, which enables real-time bidirectional communication with AI clients:
-
-1. **Enable Server** in the Zotero plugin preferences
-2. **Generate Client Configuration** by clicking the button in plugin preferences
-3. **Copy the generated configuration** to your AI client
-
-#### Supported AI Clients
-
-- **Claude Desktop**: Streamable HTTP MCP support
-- **Cherry Studio**: Streamable HTTP support
-- **Cursor IDE**: Streamable HTTP MCP support
-- **Custom implementations**: Streamable HTTP protocol
-
-For detailed client-specific configuration instructions, see the [Chinese README](./README-zh.md).
-
----
-
-## 👨‍💻 Developer Guide
-
-### Prerequisites
-
-- **Zotero** 7.0 or higher
-- **Node.js** 18.0 or higher
-- **npm** or **yarn**
-- **Git**
-
-### Step 1: Install and Configure the Zotero Plugin
-
-1.  Download the latest `zotero-mcp-plugin.xpi` from the [Releases Page](https://github.com/cookjohn/zotero-mcp/releases).
-2.  Install it in Zotero via `Tools -> Add-ons`.
-3.  Enable the server in `Preferences -> Zotero MCP Plugin`.
-
-### Step 2: Development Setup
-
-1.  Clone the repository:
-    ```bash
-    git clone https://github.com/cookjohn/zotero-mcp.git
-    cd zotero-mcp
-    ```
-    
-2.  Set up the plugin development environment:
-    ```bash
-    cd zotero-mcp-plugin
-    npm install
-    npm run build
-    ```
-    
-3.  Load the plugin in Zotero:
-    ```bash
-    # For development with auto-reload
-    npm run start
-    
-    # Or install the built .xpi file manually
-    npm run build
-    ```
-
-### Step 3: Connect AI Clients (Development)
-
-The plugin includes an integrated MCP server that uses Streamable HTTP:
-
-1.  **Enable the server** in Zotero plugin preferences
-2.  **Generate client configuration** using the plugin's built-in generator
-3.  **Configure your AI client** with the generated Streamable HTTP configuration
-
-Example configuration for Claude Desktop:
 ```json
 {
   "mcpServers": {
-    "zotero": {
-      "transport": "streamable_http",
-      "url": "http://127.0.0.1:23120/mcp"
+    "zotero-plus": {
+      "type": "http",
+      "url": "http://127.0.0.1:23121/mcp",
+      "headers": {
+        "Authorization": "Bearer <从本机 Plus 设置复制的令牌>"
+      }
     }
   }
 }
 ```
 
----
+上述为 Claude Code 格式。不同 MCP 客户端的配置字段可能不同；不要把真实 token 提交到仓库、公开截图或聊天记录中。连接配置保存后需要让客户端重新加载 MCP。
 
-## 🧩 Features
+## 验证、升级与回滚
 
-### `zotero-mcp-plugin` Features
+- [工具契约和安全边界](docs/PLUS.md)
+- [测试命令、验证结果与已知限制](docs/VALIDATION.md)
+- [第三方许可](THIRD_PARTY_NOTICES.md)
 
--   **Integrated MCP Server**: Built-in MCP server using Streamable HTTP protocol, no separate process needed
--   **Advanced Search Engine**: Full-text search with boolean operators, relevance scoring, filtering by title, creator, year, tags, item type, and more
--   **Unified Content Extraction**: Extract content from PDFs, attachments, notes, abstracts, webpage snapshots with four modes (minimal/preview/standard/complete)
--   **Smart Annotation System**: Search and retrieve PDF highlights, annotations, and notes by color, tags, and keywords with intelligent ranking
--   **Collection Management**: Browse, search collection hierarchies, get collection details, subcollections, and item lists
--   **Semantic Search**: AI-powered semantic search using embedding vectors
-    - Supports OpenAI and Ollama embedding APIs (auto-detection)
-    - Vector indexing with SQLite-vec storage
-    - Index status column in main library view
-    - Collection/item context menu for index management
--   **Write Operations**: Create/modify notes, manage tags, update metadata fields, create new items and reparent standalone PDFs
--   **Full-text Database**: Cached PDF full-text database with list, search, get, and stats operations
--   **Standalone Attachment Management**: Search and manage standalone PDF items without parent metadata
--   **Client Configuration Generator**: Automatically generates configuration for various AI clients
--   **Security**: Local-only operation ensuring complete data privacy
--   **User-Friendly**: Easy configuration through Zotero preferences interface
+集成测试使用独立 `.scaffold/test/profile` 与 `.scaffold/test/data`，不使用真实文库。公开 PDF 联网识别需显式设置 `PLUS_TEST_NETWORK_PDF=1`。
 
----
-## 📸 Screenshots
+升级前保留旧 XPI、客户端配置及一致性文库备份。回滚时停用 Plus，将客户端恢复到原版入口；保留 Plus 账本以便核查历史。高版本账本不能由低版本插件静默重建。
 
-Here are some screenshots demonstrating the functionality of Zotero MCP:
-
-| Feature | Screenshot |
-| :--- | :---: |
-| **Feature Demonstration** | ![Feature Demonstration](./IMG/功能说明.png) |
-| **Literature Search** | ![Literature Search](./IMG/文献检索.png) |
-| **Viewing Metadata** | ![Viewing Metadata](./IMG/元数据查看.png) |
-| **Full-text Reading 1** | ![Full-text Reading 1](./IMG/全文读取1.png) |
-| **Full-text Reading 2** | ![Full-text Reading 2](./IMG/全文读取2.png) |
-| **Searching Attachments (Gemini CLI)** | ![Searching Attachments](./IMG/geminicli-附件检索.png) |
-| **Reading PDF (Gemini CLI)** | ![Reading PDF](./IMG/geminicli-pdf读取.png) |
-
----
-
-
-## 🔧 API Reference (MCP Tools)
-
-The integrated MCP server provides **20 tools** in 5 categories:
-
-### 1. Search & Query (7 tools)
-
-#### `search_library`
-Advanced library search with multi-dimensional filtering, boolean operators, relevance scoring, and intelligent mode control.
-- `q`, `title`, `titleOperator`, `yearRange`, `fulltext`, `fulltextMode`, `itemType`, `includeAttachments`, `mode` (minimal/preview/standard/complete), `relevanceScoring`, `sort`, `limit`, `offset`
-
-#### `search_annotations`
-Search annotations by query, colors, or tags with intelligent ranking.
-- `q`, `itemKeys`, `types` (note/highlight/annotation/ink/text/image), `colors`, `tags`, `mode`, `limit`, `offset`
-
-#### `search_fulltext`
-Full-text search across all document content with context snippets.
-- `q` (required), `itemKeys`, `mode`, `contextLength`, `caseSensitive`
-
-#### `search_collections`
-Search collections by name. Params: `q`, `limit`.
-
-#### `get_item_details`
-Get complete metadata for a single item. Params: `itemKey` (required), `mode`.
-
-#### `get_item_abstract`
-Get item abstract/summary. Params: `itemKey` (required), `format` (json/text).
-
-#### `get_content`
-Unified content extraction: PDF full-text, notes, abstracts, webpage snapshots from items or specific attachments.
-- `itemKey`, `attachmentKey`, `mode`, `include` (pdf/attachments/notes/abstract/webpage), `contentControl`, `format` (json/text)
-
-### 2. Collection Management (4 tools)
-
-#### `get_collections`
-Get all collections. Params: `mode`, `limit`, `offset`.
-
-#### `get_collection_details`
-Get details of a specific collection. Params: `collectionKey` (required).
-
-#### `get_collection_items`
-Get items in a collection. Params: `collectionKey` (required), `limit`, `offset`.
-
-#### `get_subcollections`
-Get subcollections. Params: `collectionKey` (required), `limit`, `offset`, `recursive`.
-
-### 3. Semantic Search (3 tools, can be disabled in preferences)
-
-#### `semantic_search`
-AI-powered semantic search using embedding vectors. Finds conceptually related content even without exact keyword matches.
-- `query` (required), `topK`, `minScore`, `language` (zh/en/all)
-
-#### `find_similar`
-Find items semantically similar to a given item.
-- `itemKey` (required), `topK`, `minScore`
-
-#### `semantic_status`
-Get semantic search service status and index statistics. No parameters required.
-
-### 4. Full-text Database (1 tool)
-
-#### `fulltext_database`
-Access cached full-text content database (read-only).
-- `action` (required: list/search/get/stats), `query`, `itemKeys`, `limit`
-
-### 5. Write Operations (4 tools, can be disabled in preferences)
-
-#### `write_note`
-Create or modify Zotero notes. Supports Markdown auto-conversion to HTML.
-- `action` (required: create/update/append), `parentKey`, `noteKey`, `content` (required), `tags`
-
-#### `write_tag`
-Add, remove, or replace tags on items.
-- `action` (required: add/remove/set), `itemKey` (required), `tags` (required)
-
-#### `write_metadata`
-Update metadata fields on items (title, abstract, date, DOI, creators, etc.).
-- `itemKey` (required), `fields`, `creators`
-
-#### `write_item`
-Create new items, reparent existing attachments, or import local files as attachments.
-- `action` (required: create/reparent/import), `itemType`, `fields`, `creators`, `tags`, `attachmentKeys`, `parentKey`, `filePath`, `parentItemKey`, `title`, `libraryID`
-
-#### `add_by_identifier`
-Import items by identifier (DOI, arXiv, ISBN, PMID, ADS bibcode) using Zotero's native resolvers — the same pipeline as the desktop "magic wand", including translator metadata and automatic attachment fetching.
-- `identifiers` (required), `libraryID`, `collectionKey`, `saveAttachments`, `duplicates`, `titleDuplicates`, `dryRun`, `async`, `jobID`
-
----
-
-## 🤝 Contributing
-
-Contributions are welcome! Please feel free to submit pull requests, report issues, or suggest enhancements.
-
-1.  Fork the repository.
-2.  Create your feature branch (`git checkout -b feature/AmazingFeature`).
-3.  Commit your changes (`git commit -m 'Add some AmazingFeature'`).
-4.  Push to the branch (`git push origin feature/AmazingFeature`).
-5.  Open a Pull Request.
-
-## 📄 License
-
-This project is licensed under the [MIT License](./LICENSE).
-
-## 🙏 Acknowledgements
-
--   [Zotero](https://www.zotero.org/) - An excellent open-source reference management tool.
--   [Model Context Protocol](https://modelcontextprotocol.org/) - The protocol for AI tool integration.
--   [![Using Zotero Plugin Template](https://img.shields.io/badge/Using-Zotero%20Plugin%20Template-blue?style=flat-square&logo=github)](https://github.com/windingwind/zotero-plugin-template)
-Contact us 
-![Contact us](./IMG/0320.jpg)
+本项目独立发布源码和 XPI，保留上游归属。发布辅助脚本只做本地检查，不隐式提交或推送。实际处理真实文库前，仍须核对一致性备份并取得该批操作确认。

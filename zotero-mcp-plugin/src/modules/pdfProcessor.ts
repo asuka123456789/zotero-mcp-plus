@@ -25,9 +25,12 @@ export class PDFProcessor {
     // Zotero 10 replaced the pdf-worker with the unified document-worker:
     // new worker URL, 'pdf.'-prefixed actions, unified FetchData asset callback
     // (see WORKER_URL / getAssetURL in Zotero 10 pdfWorker/manager.js)
-    const major = parseInt(String(this.Zotero.version || "").split(".")[0], 10) || 0;
+    const major =
+      parseInt(String(this.Zotero.version || "").split(".")[0], 10) || 0;
     this._useDocumentWorker = major >= 10;
-    this.ztoolkit.log(`[PDFProcessor] 初始化 (documentWorker=${this._useDocumentWorker})`);
+    this.ztoolkit.log(
+      `[PDFProcessor] 初始化 (documentWorker=${this._useDocumentWorker})`,
+    );
   }
 
   private _init(): void {
@@ -76,9 +79,13 @@ export class PDFProcessor {
               assetPath.startsWith("standard_fonts/")
                 ? "resource://zotero/reader/pdf/web/"
                 : "resource://zotero/document-worker/";
-            const response = await this.Zotero.HTTP.request("GET", base + assetPath, {
-              responseType: "arraybuffer",
-            });
+            const response = await this.Zotero.HTTP.request(
+              "GET",
+              base + assetPath,
+              {
+                responseType: "arraybuffer",
+              },
+            );
             respData = new Uint8Array(response.response);
           } else if (message.action === "FetchBuiltInCMap") {
             const response = await this.Zotero.HTTP.request(
@@ -126,11 +133,14 @@ export class PDFProcessor {
   }
 
   private static readonly PREF_TIMEOUT_SECONDS =
-    "extensions.zotero.zotero-mcp-plugin.pdf.timeoutSeconds";
+    "extensions.zotero.zotero-mcp-plus.pdf.timeoutSeconds";
 
   private _getTimeoutMs(): number {
     try {
-      const raw = this.Zotero.Prefs.get(PDFProcessor.PREF_TIMEOUT_SECONDS, true);
+      const raw = this.Zotero.Prefs.get(
+        PDFProcessor.PREF_TIMEOUT_SECONDS,
+        true,
+      );
       const seconds = parseInt(String(raw), 10);
       if (Number.isFinite(seconds) && seconds > 0) return seconds * 1000;
     } catch {
@@ -169,14 +179,11 @@ export class PDFProcessor {
         reject: (reason?: any) => {
           clearTimeout(timeoutId);
           reject(reason);
-        }
+        },
       };
 
       if (transfer) {
-        this._worker!.postMessage(
-          { id: promiseID, action, data },
-          transfer,
-        );
+        this._worker!.postMessage({ id: promiseID, action, data }, transfer);
       } else {
         this._worker!.postMessage({ id: promiseID, action, data });
       }
@@ -218,7 +225,10 @@ export class PDFProcessor {
 
       return response.text;
     } catch (error) {
-      const errMsg = error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+      const errMsg =
+        error instanceof Error
+          ? `${error.name}: ${error.message}`
+          : String(error);
       this.ztoolkit.log(`[PDFProcessor] PDF文本提取失败: ${errMsg}`, "error");
       throw error;
     }

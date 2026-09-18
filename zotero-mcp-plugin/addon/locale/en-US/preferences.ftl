@@ -7,12 +7,17 @@ pref-server-enable =
 pref-server-enable-text = Enable Server
 pref-server-port = Port
 pref-server-port-invalid = Port must be between 1024 and 65535.
-pref-server-port-restart-hint = Restart server after changing
-pref-server-allow-remote =
-    .label = Allow remote access (listen on 0.0.0.0)
-pref-server-remote-text = Allow Remote Access
-pref-server-remote-sub = Ensure your network is secure before enabling
-pref-server-allow-remote-warning = Warning: This will expose the MCP server to the network. Only enable if you need remote access or have VPN/proxy issues.
+pref-server-port-restart-hint = Click 'Apply and Restart' to apply the new port
+pref-server-port-apply = Apply and Restart
+pref-server-token-title = Bearer Access Token
+pref-server-token-show = Show
+pref-server-token-copy = Copy Token
+pref-server-token-rotate = Rotate Token
+pref-server-token-desc = All AI clients connecting to MCP must provide this Bearer token for secure authentication
+pref-write-enable =
+    .label = Enable Write Operations
+pref-write-enable-text = Enable Write Operations
+pref-write-enable-sub = Disabled by default; when enabled, AI clients can create and modify items/notes
 pref-server-off-hint = MCP server is disabled. Enable it to configure clients and search features.
 
 pref-mcp-settings-title = Content Settings
@@ -216,15 +221,10 @@ pref-detail-stats-title = Detailed Stats & API Usage
 pref-detail-index-section = Index Details
 pref-detail-api-section = API Cumulative
 
-first-install-title = Welcome to Zotero MCP Plugin
-first-install-prompt = Thank you for installing the Zotero MCP Plugin! To get started, you need to generate configuration files for your AI clients. Would you like to open the settings page now to generate configurations?
+first-install-title = Welcome to Zotero MCP Plus Plugin
+first-install-prompt = Thank you for installing the Zotero MCP Plus Plugin! To get started, you need to generate configuration files for your AI clients. Would you like to open the settings page now to generate configurations?
 first-install-open-prefs = Open Settings
 first-install-later = Configure Later
 
-pref-write-enable-text = Enable Write Operations
-pref-write-enable-sub = Allow AI clients to create and modify notes (disabled by default for safety)
-
 pref-contact-title = Contact Information
-pref-contact-email = Email: fransjone@mail.com
-pref-contact-github = GitHub: https://github.com/cookjohn/zotero-mcp
-pref-contact-wechat = WeChat: 未来论文实验室
+pref-contact-github = GitHub: https://github.com/asuka123456789/zotero-mcp-plus
